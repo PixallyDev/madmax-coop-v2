@@ -4,20 +4,20 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
 #include "vmt_catalog.h"
 
 namespace EntityInspector {
 
-struct InspectedObject {
+struct DiscoveredEntity {
+    ptrdiff_t stackOffset;
     uintptr_t baseAddress;
     uintptr_t vmtAddress;
     const char* className;
-    ptrdiff_t coordOffset;
-    uintptr_t memberPointers[16];
-    bool isValid;
+    uintptr_t memberPointers[8];
 };
 
-static InspectedObject g_playerEntity = { 0 };
+static std::vector<DiscoveredEntity> g_discoveredList;
 static bool g_bInspected = false;
 static char g_diagnosticLog[1024] = "Waiting for coordinate lock...";
 
@@ -26,12 +26,11 @@ inline bool SafeReadPtr(uintptr_t addr, uintptr_t* outVal) {
     return ReadProcessMemory(GetCurrentProcess(), (LPCVOID)addr, outVal, sizeof(uintptr_t), &read) && read == sizeof(uintptr_t);
 }
 
-// Deep inspects the memory around coordAddress (both direct struct and stack pointer dereference)
+// Deep inspects the memory around coordAddress (both direct struct and all stack frame pointers)
 inline bool InspectPlayerObject(uintptr_t coordAddress, uintptr_t gameBase, size_t gameSize) {
     if (!coordAddress || !gameBase) return false;
 
-    MEMORY_BASIC_INFORMATION mbi;
-    VirtualQuery((LPCVOID)coordAddress, &mbi, sizeof(mbi));
+    g_discoveredList.clear();
 
     // Phase 1: Direct struct scan (walking backwards up to 0x1000 bytes)
     for (ptrdiff_t offset = 0; offset <= 0x1000; offset += 8) {
@@ -41,56 +40,49 @@ inline bool InspectPlayerObject(uintptr_t coordAddress, uintptr_t gameBase, size
             if (vmtPtr >= gameBase && vmtPtr < (gameBase + gameSize)) {
                 const char* clsName = VMTCatalog::LookupClassByVMT(vmtPtr, gameBase);
                 if (clsName) {
-                    g_playerEntity.baseAddress = candBase;
-                    g_playerEntity.vmtAddress = vmtPtr;
-                    g_playerEntity.className = clsName;
-                    g_playerEntity.coordOffset = offset;
-                    g_playerEntity.isValid = true;
-
-                    for (int i = 0; i < 16; i++) {
-                        SafeReadPtr(candBase + i * 8, &g_playerEntity.memberPointers[i]);
+                    DiscoveredEntity ent;
+                    ent.stackOffset = -offset;
+                    ent.baseAddress = candBase;
+                    ent.vmtAddress = vmtPtr;
+                    ent.className = clsName;
+                    for (int i = 0; i < 8; i++) {
+                        SafeReadPtr(candBase + i * 8, &ent.memberPointers[i]);
                     }
-
-                    sprintf_s(g_diagnosticLog, sizeof(g_diagnosticLog),
-                        "[Direct Struct] %s @ 0x%p (VMT 0x%p, Offset +0x%tX)",
-                        clsName, (void*)candBase, (void*)vmtPtr, offset);
-                    
-                    g_bInspected = true;
-                    return true;
+                    g_discoveredList.push_back(ent);
                 }
             }
         }
     }
 
-    // Phase 2: Pointer Dereference Scan (e.g. if coordAddress is on Stack/TLS, find 'this' pointer)
-    // Scan [-0x800 to +0x800] from coordAddress for any pointer pointing to an object with a recognized VMT
-    for (ptrdiff_t offset = -0x800; offset <= 0x800; offset += 8) {
+    // Phase 2: Comprehensive Stack Frame Scan [-0x1000 to +0x1000]
+    for (ptrdiff_t offset = -0x1000; offset <= 0x1000; offset += 8) {
         uintptr_t stackVal = 0;
         if (SafeReadPtr(coordAddress + offset, &stackVal)) {
-            // Check if stackVal is a plausible heap pointer (aligned to 8 bytes, non-null)
             if (stackVal > 0x10000 && (stackVal & 7) == 0) {
                 uintptr_t targetVmt = 0;
                 if (SafeReadPtr(stackVal, &targetVmt)) {
                     if (targetVmt >= gameBase && targetVmt < (gameBase + gameSize)) {
                         const char* clsName = VMTCatalog::LookupClassByVMT(targetVmt, gameBase);
                         if (clsName) {
-                            g_playerEntity.baseAddress = stackVal;
-                            g_playerEntity.vmtAddress = targetVmt;
-                            g_playerEntity.className = clsName;
-                            g_playerEntity.coordOffset = offset;
-                            g_playerEntity.isValid = true;
-
-                            for (int i = 0; i < 16; i++) {
-                                SafeReadPtr(stackVal + i * 8, &g_playerEntity.memberPointers[i]);
+                            // Check if this object is already in list
+                            bool alreadyIn = false;
+                            for (const auto& existing : g_discoveredList) {
+                                if (existing.baseAddress == stackVal) {
+                                    alreadyIn = true;
+                                    break;
+                                }
                             }
-
-                            sprintf_s(g_diagnosticLog, sizeof(g_diagnosticLog),
-                                "[Stack Ref @ %c0x%tX] -> %s @ 0x%p (VMT 0x%p)",
-                                (offset >= 0 ? '+' : '-'), (offset >= 0 ? offset : -offset),
-                                clsName, (void*)stackVal, (void*)targetVmt);
-
-                            g_bInspected = true;
-                            return true;
+                            if (!alreadyIn) {
+                                DiscoveredEntity ent;
+                                ent.stackOffset = offset;
+                                ent.baseAddress = stackVal;
+                                ent.vmtAddress = targetVmt;
+                                ent.className = clsName;
+                                for (int i = 0; i < 8; i++) {
+                                    SafeReadPtr(stackVal + i * 8, &ent.memberPointers[i]);
+                                }
+                                g_discoveredList.push_back(ent);
+                            }
                         }
                     }
                 }
@@ -98,9 +90,15 @@ inline bool InspectPlayerObject(uintptr_t coordAddress, uintptr_t gameBase, size
         }
     }
 
+    if (!g_discoveredList.empty()) {
+        sprintf_s(g_diagnosticLog, sizeof(g_diagnosticLog),
+            "Identified %zu Engine Objects in Active Call Stack!", g_discoveredList.size());
+        g_bInspected = true;
+        return true;
+    }
+
     sprintf_s(g_diagnosticLog, sizeof(g_diagnosticLog),
-        "Coord @ 0x%p (Region 0x%p, Size 0x%zX): No VMT in direct struct or stack frame",
-        (void*)coordAddress, mbi.BaseAddress, mbi.RegionSize);
+        "Coord @ 0x%p: No VMT in direct struct or stack frame", (void*)coordAddress);
     return false;
 }
 

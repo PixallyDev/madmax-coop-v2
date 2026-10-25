@@ -343,7 +343,7 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             }
 
             ImGui::Separator();
-            ImGui::Text("Engine Entity Inspector (REA Reverse Engineering):");
+            ImGui::Text("Engine Entity Inspector (Active Call Stack):");
             ImGui::TextWrapped("%s", EntityInspector::g_diagnosticLog);
             if (ImGui::Button("Re-Inspect Memory")) {
                 EntityInspector::g_bInspected = false;
@@ -351,14 +351,26 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
                     EntityInspector::InspectPlayerObject(g_targetCandidateAddress, g_gameBase, g_gameSize);
                 }
             }
-            if (EntityInspector::g_playerEntity.isValid) {
-                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Object Class: %s", EntityInspector::g_playerEntity.className);
-                ImGui::Text("Base Pointer: 0x%p", (void*)EntityInspector::g_playerEntity.baseAddress);
-                ImGui::Text("VMT Address:  0x%p", (void*)EntityInspector::g_playerEntity.vmtAddress);
-                ImGui::Text("Coord Offset: +0x%tX", EntityInspector::g_playerEntity.coordOffset);
-                if (ImGui::TreeNode("Inspect Internal Member Pointers")) {
-                    for (int i = 0; i < 8; i++) {
-                        ImGui::Text("  [+0x%02X] 0x%016llX", i * 8, EntityInspector::g_playerEntity.memberPointers[i]);
+
+            for (size_t idx = 0; idx < EntityInspector::g_discoveredList.size(); idx++) {
+                const auto& ent = EntityInspector::g_discoveredList[idx];
+                bool isCore = strstr(ent.className, "Player") || strstr(ent.className, "Character") || strstr(ent.className, "Vehicle");
+                ImVec4 col = isCore ? ImVec4(0.2f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.8f, 0.2f, 1.0f);
+                
+                char headerLabel[128];
+                sprintf_s(headerLabel, "[%zu] %s @ 0x%p (Offset %c0x%tX)###ent_%zu",
+                    idx + 1, ent.className, (void*)ent.baseAddress,
+                    (ent.stackOffset >= 0 ? '+' : '-'), (ent.stackOffset >= 0 ? ent.stackOffset : -ent.stackOffset), idx);
+                
+                ImGui::PushStyleColor(ImGuiCol_Text, col);
+                bool open = ImGui::TreeNode(headerLabel);
+                ImGui::PopStyleColor();
+
+                if (open) {
+                    ImGui::Text("VMT: 0x%p", (void*)ent.vmtAddress);
+                    ImGui::Text("Base: 0x%p", (void*)ent.baseAddress);
+                    for (int m = 0; m < 8; m++) {
+                        ImGui::Text("  [+0x%02X] 0x%016llX", m * 8, ent.memberPointers[m]);
                     }
                     ImGui::TreePop();
                 }
