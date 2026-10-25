@@ -1,17 +1,14 @@
 #include <iostream>
+#include <vector>
+#include <cstring>
 #include <enet/enet.h>
+#include "../src/common/protocol.h"
 
-int main() {
-    std::cout << "[TestClient] Initializing ENet..." << std::endl;
-    if (enet_initialize() != 0) {
-        std::cerr << "[TestClient] Failed to initialize ENet." << std::endl;
-        return 1;
-    }
-
+int run_client_simulation(const char* name, int syncTicks) {
+    std::cout << "[" << name << "] Initializing..." << std::endl;
     ENetHost* client = enet_host_create(NULL, 1, 2, 0, 0);
     if (!client) {
-        std::cerr << "[TestClient] Failed to create ENet client host." << std::endl;
-        enet_deinitialize();
+        std::cerr << "[" << name << "] Failed to create ENet host." << std::endl;
         return 1;
     }
 
@@ -21,30 +18,88 @@ int main() {
 
     ENetPeer* peer = enet_host_connect(client, &address, 2, 0);
     if (!peer) {
-        std::cerr << "[TestClient] No available peers for initiating an ENet connection." << std::endl;
+        std::cerr << "[" << name << "] Failed to connect." << std::endl;
         enet_host_destroy(client);
-        enet_deinitialize();
         return 1;
     }
 
-    ENetEvent event;
-    bool connected = false;
-    for (int i = 0; i < 20; ++i) {
-        if (enet_host_service(client, &event, 250) > 0) {
+    bool joined = false;
+    uint32_t myClientId = 0;
+    uint32_t seq = 1;
+    int receivedSyncs = 0;
+
+    for (int t = 0; t < 40; ++t) {
+        ENetEvent event;
+        while (enet_host_service(client, &event, 50) > 0) {
             if (event.type == ENET_EVENT_TYPE_CONNECT) {
-                std::cout << "[TestClient] Successfully connected to 127.0.0.1:7777!" << std::endl;
-                connected = true;
-                break;
+                std::cout << "[" << name << "] Connected to server! Sending JoinReq..." << std::endl;
+                std::vector<uint8_t> reqBuf(sizeof(PacketHeader) + sizeof(MsgClientJoinReq));
+                PacketHeader* hdr = reinterpret_cast<PacketHeader*>(reqBuf.data());
+                hdr->magic = MMCP_MAGIC;
+                hdr->opcode = OP_CLIENT_JOIN_REQ;
+                hdr->payloadSize = sizeof(MsgClientJoinReq);
+                hdr->sequence = seq++;
+                hdr->clientId = 0;
+
+                MsgClientJoinReq* req = reinterpret_cast<MsgClientJoinReq*>(reqBuf.data() + sizeof(PacketHeader));
+                strncpy_s(req->playerName, name, sizeof(req->playerName));
+                req->protocolVersion = 1;
+
+                ENetPacket* pkt = enet_packet_create(reqBuf.data(), reqBuf.size(), ENET_PACKET_FLAG_RELIABLE);
+                enet_peer_send(peer, 0, pkt);
+            } else if (event.type == ENET_EVENT_TYPE_RECEIVE) {
+                if (event.packet->dataLength >= sizeof(PacketHeader)) {
+                    PacketHeader* hdr = reinterpret_cast<PacketHeader*>(event.packet->data);
+                    if (hdr->magic == MMCP_MAGIC) {
+                        uint8_t* payload = event.packet->data + sizeof(PacketHeader);
+                        if (hdr->opcode == OP_CLIENT_JOIN_ACK) {
+                            MsgClientJoinAck* ack = reinterpret_cast<MsgClientJoinAck*>(payload);
+                            myClientId = ack->assignedClientId;
+                            joined = true;
+                            std::cout << "[" << name << "] Join ACK received! Assigned ClientID=" << myClientId << " MOTD: " << ack->serverMotd << std::endl;
+                        } else if (hdr->opcode == OP_PLAYER_SYNC) {
+                            MsgPlayerSync* sync = reinterpret_cast<MsgPlayerSync*>(payload);
+                            receivedSyncs++;
+                            std::cout << "[" << name << "] Received PlayerSync from Peer " << hdr->clientId 
+                                      << " Pos=(" << sync->posX << ", " << sync->posY << ", " << sync->posZ << ")" << std::endl;
+                        }
+                    }
+                }
+                enet_packet_destroy(event.packet);
             }
+        }
+
+        // Send dummy sync packet if joined
+        if (joined && t % 2 == 0) {
+            std::vector<uint8_t> syncBuf(sizeof(PacketHeader) + sizeof(MsgPlayerSync));
+            PacketHeader* hdr = reinterpret_cast<PacketHeader*>(syncBuf.data());
+            hdr->magic = MMCP_MAGIC;
+            hdr->opcode = OP_PLAYER_SYNC;
+            hdr->payloadSize = sizeof(MsgPlayerSync);
+            hdr->sequence = seq++;
+            hdr->clientId = myClientId;
+
+            MsgPlayerSync* sync = reinterpret_cast<MsgPlayerSync*>(syncBuf.data() + sizeof(PacketHeader));
+            sync->posX = 100.0f + t;
+            sync->posY = 50.0f;
+            sync->posZ = 200.0f + t;
+            sync->health = 100.0f;
+
+            ENetPacket* pkt = enet_packet_create(syncBuf.data(), syncBuf.size(), 0);
+            enet_peer_send(peer, 1, pkt);
         }
     }
 
-    if (!connected) {
-        std::cout << "[TestClient] Connection timed out (expected if server not running)." << std::endl;
-    }
-
-    enet_peer_reset(peer);
+    enet_peer_disconnect(peer, 0);
+    enet_host_flush(client);
     enet_host_destroy(client);
+    return joined ? 0 : 1;
+}
+
+int main(int argc, char** argv) {
+    if (enet_initialize() != 0) return 1;
+    const char* clientName = (argc > 1) ? argv[1] : "MaxRockatansky";
+    int res = run_client_simulation(clientName, 10);
     enet_deinitialize();
-    return connected ? 0 : 2;
+    return res;
 }
