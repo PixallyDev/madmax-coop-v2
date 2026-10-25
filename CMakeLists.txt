@@ -41,13 +41,20 @@ target_link_libraries(imgui d3d11 d3dcompiler)
 
 # Client Mod Injected DLL (named madmax_client, output file dxgi.dll)
 file(GLOB_RECURSE CLIENT_SOURCES "src/client/*.cpp" "src/client/*.h")
-add_library(madmax_client SHARED ${CLIENT_SOURCES})
+add_library(madmax_client SHARED ${CLIENT_SOURCES} src/client/dxgi_proxy.def)
 target_compile_definitions(madmax_client PRIVATE WIN32 _WINSOCK_DEPRECATED_NO_WARNINGS)
 target_link_libraries(madmax_client PRIVATE minhook enet lua imgui d3d11 dxgi.lib d3dcompiler ws2_32 winmm)
 set_target_properties(madmax_client PROPERTIES PREFIX "" OUTPUT_NAME "dxgi")
 
 # Standalone Dedicated Relay Server
-file(GLOB_RECURSE SERVER_SOURCES "server/*.cpp" "server/*.h")
-add_executable(madmax_server ${SERVER_SOURCES})
+add_executable(madmax_server server/main.cpp)
 target_compile_definitions(madmax_server PRIVATE WIN32 _WINSOCK_DEPRECATED_NO_WARNINGS)
 target_link_libraries(madmax_server PRIVATE enet lua ws2_32 winmm)
+
+# Diagnostics & Verification Executables
+add_executable(test_lua server/test_lua.cpp)
+target_link_libraries(test_lua PRIVATE lua)
+
+add_executable(test_client server/test_client.cpp)
+target_compile_definitions(test_client PRIVATE WIN32 _WINSOCK_DEPRECATED_NO_WARNINGS)
+target_link_libraries(test_client PRIVATE enet ws2_32 winmm)
