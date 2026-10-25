@@ -18,6 +18,7 @@
 #include "../common/memory_scanner.h"
 #include "auto_scanner.h"
 #include "remote_render.h"
+#include "combat_sync.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -125,6 +126,9 @@ static void ServiceNetwork() {
                     } else if (hdr->opcode == OP_PLAYER_SYNC && hdr->payloadSize == sizeof(MsgPlayerSync)) {
                         MsgPlayerSync* sync = reinterpret_cast<MsgPlayerSync*>(payload);
                         RemoteRenderer::UpdateOrAddPlayer(hdr->clientId, sync->posX, sync->posY, sync->posZ, sync->health);
+                    } else if (hdr->opcode == OP_COMBAT_EVENT && hdr->payloadSize == sizeof(MsgCombatEvent)) {
+                        MsgCombatEvent* evt = reinterpret_cast<MsgCombatEvent*>(payload);
+                        CombatSync::HandleRemoteCombat(evt, hdr->clientId);
                     }
                 }
             }
@@ -205,13 +209,13 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             sync->posY = g_localPlayerPos[1];
             sync->posZ = g_localPlayerPos[2];
             sync->health = 100.0f;
+            sync->isInVehicle = 0;
 
             ENetPacket* pkt = enet_packet_create(syncBuf.data(), syncBuf.size(), 0);
             enet_peer_send(g_pServerPeer, 1, pkt);
         }
     }
 
-    // Interpolate positions of remote players
     RemoteRenderer::InterpolatePositions(0.016f);
 
     if (g_bImGuiInitialized && g_mainRenderTargetView) {
@@ -219,13 +223,14 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        // Render Co-Op World HUD (Compass and Peer Waypoints)
+        // Render Co-Op World HUD & Combat Event Stream
         if (g_bConnected) {
             RemoteRenderer::RenderWorldHUD(g_localPlayerPos[0], g_localPlayerPos[1], g_localPlayerPos[2]);
+            CombatSync::RenderCombatFeed();
         }
 
         if (g_bShowMenu) {
-            ImGui::Begin("Mad Max Co-Op Multiplayer (Milestones C, D, E & F)", &g_bShowMenu, ImGuiWindowFlags_AlwaysAutoResize);
+            ImGui::Begin("Mad Max Co-Op Multiplayer (Milestones G & H)", &g_bShowMenu, ImGuiWindowFlags_AlwaysAutoResize);
             ImGui::Text("Mad Max Multiplayer Injected - Press [F5] to Toggle Menu");
             ImGui::Separator();
 
@@ -251,7 +256,52 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             }
 
             ImGui::Separator();
-            ImGui::Text("Milestone D: Coordinate Scanner & Telemetry:");
+            ImGui::Text("Milestone H: Co-Op Combat & Harpoon Actions:");
+            if (ImGui::Button("Fire Shotgun")) {
+                if (g_bConnected) {
+                    std::vector<uint8_t> combatBuf(sizeof(PacketHeader) + sizeof(MsgCombatEvent));
+                    PacketHeader* hdr = reinterpret_cast<PacketHeader*>(combatBuf.data());
+                    hdr->magic = MMCP_MAGIC;
+                    hdr->opcode = OP_COMBAT_EVENT;
+                    hdr->payloadSize = sizeof(MsgCombatEvent);
+                    hdr->sequence = g_packetSeq++;
+                    hdr->clientId = g_assignedClientId;
+
+                    MsgCombatEvent* evt = reinterpret_cast<MsgCombatEvent*>(combatBuf.data() + sizeof(PacketHeader));
+                    evt->actionType = COMBAT_ACTION_SHOTGUN_FIRE;
+                    evt->impactPosX = g_localPlayerPos[0] + 5.0f;
+                    evt->impactPosY = g_localPlayerPos[1];
+                    evt->impactPosZ = g_localPlayerPos[2] + 5.0f;
+                    evt->damageAmount = 85.0f;
+
+                    ENetPacket* pkt = enet_packet_create(combatBuf.data(), combatBuf.size(), ENET_PACKET_FLAG_RELIABLE);
+                    enet_peer_send(g_pServerPeer, 0, pkt);
+                    CombatSync::LogAction("You fired your Shotgun!", ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Tether Harpoon")) {
+                if (g_bConnected) {
+                    std::vector<uint8_t> combatBuf(sizeof(PacketHeader) + sizeof(MsgCombatEvent));
+                    PacketHeader* hdr = reinterpret_cast<PacketHeader*>(combatBuf.data());
+                    hdr->magic = MMCP_MAGIC;
+                    hdr->opcode = OP_COMBAT_EVENT;
+                    hdr->payloadSize = sizeof(MsgCombatEvent);
+                    hdr->sequence = g_packetSeq++;
+                    hdr->clientId = g_assignedClientId;
+
+                    MsgCombatEvent* evt = reinterpret_cast<MsgCombatEvent*>(combatBuf.data() + sizeof(PacketHeader));
+                    evt->actionType = COMBAT_ACTION_HARPOON_TETHER;
+                    evt->damageAmount = 25.0f;
+
+                    ENetPacket* pkt = enet_packet_create(combatBuf.data(), combatBuf.size(), ENET_PACKET_FLAG_RELIABLE);
+                    enet_peer_send(g_pServerPeer, 0, pkt);
+                    CombatSync::LogAction("You tethered Magnum Opus Harpoon!", ImVec4(0.2f, 1.0f, 0.4f, 1.0f));
+                }
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Coordinate Scanner & Telemetry:");
             ImGui::Text("MadMax.exe Base: 0x%p (Size: 0x%zX)", (void*)g_gameBase, g_gameSize);
 
             if (!AutoScanner::g_bScanningActive) {
