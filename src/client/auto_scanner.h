@@ -52,7 +52,7 @@ inline void StartHeuristicScan() {
 
                             // Realistic wasteland bounds & non-zero coordinates
                             if (x > -40000.0f && x < 40000.0f && abs(x) > 1.0f &&
-                                y > -200.0f && y < 2000.0f && abs(y) > 0.1f &&
+                                y >= 400.0f && y <= 850.0f &&
                                 z > -40000.0f && z < 40000.0f && abs(z) > 1.0f) {
                                 
                                 uintptr_t candAddr = currentAddr + offset + i;

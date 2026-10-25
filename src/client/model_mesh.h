@@ -94,72 +94,67 @@ public:
 
         // Colors (RGBA)
         uint32_t colBodyDark   = IM_COL32(45, 48, 52, 255);    // Weathered Wasteland Steel
-        uint32_t colHood       = IM_COL32(75, 50, 35, 255);    // Rust & Matte Primer
-        uint32_t colGlass      = IM_COL32(20, 30, 38, 240);    // Reinforced Windshield Louvers
-        uint32_t colRoof       = IM_COL32(50, 52, 56, 255);    // Steel Roof Panel
-        uint32_t colChrome     = IM_COL32(180, 185, 195, 255); // Supercharger Chrome
-        uint32_t colBullbar    = IM_COL32(30, 30, 32, 255);    // Heavy Iron Ram
+        uint32_t colHood       = IM_COL32(85, 55, 38, 255);    // Rust & Matte Primer
+        uint32_t colGlass      = IM_COL32(20, 32, 42, 240);    // Reinforced Windshield Louvers
+        uint32_t colRoof       = IM_COL32(52, 54, 58, 255);    // Steel Roof Panel
+        uint32_t colChrome     = IM_COL32(195, 200, 210, 255); // Supercharger Chrome
+        uint32_t colBullbar    = IM_COL32(32, 32, 35, 255);    // Heavy Iron Ram
         uint32_t colGrill      = IM_COL32(25, 25, 25, 255);    // Front Radiator Mesh
-        uint32_t colTail       = IM_COL32(160, 30, 20, 255);   // Red Tail Lamps
+        uint32_t colTail       = IM_COL32(180, 35, 25, 255);   // Red Tail Lamps
 
-        // Faces (Quad indices in CCW order for outward normal)
-        outFaces.push_back({ {4, 5, 6, 7}, 4, colHood, false });         // Hood
-        outFaces.push_back({ {7, 6, 9, 8}, 4, colGlass, false });        // Windshield
-        outFaces.push_back({ {8, 9, 10, 11}, 4, colRoof, false });       // Roof
-        outFaces.push_back({ {11, 10, 14, 15}, 4, colGlass, false });    // Rear Windshield
-        outFaces.push_back({ {15, 14, 13, 12}, 4, colBodyDark, false }); // Trunk Deck
-        outFaces.push_back({ {3, 2, 5, 4}, 4, colGrill, false });        // Front Grille
-        outFaces.push_back({ {1, 0, 12, 13}, 4, colTail, false });       // Rear Tail Panel
+        // Faces (Double-sided for 100% reliable visibility from any angle)
+        outFaces.push_back({ {4, 5, 6, 7}, 4, colHood, true });         // Hood
+        outFaces.push_back({ {7, 6, 9, 8}, 4, colGlass, true });        // Windshield
+        outFaces.push_back({ {8, 9, 10, 11}, 4, colRoof, true });       // Roof
+        outFaces.push_back({ {11, 10, 14, 15}, 4, colGlass, true });    // Rear Windshield
+        outFaces.push_back({ {15, 14, 13, 12}, 4, colBodyDark, true }); // Trunk Deck
+        outFaces.push_back({ {3, 2, 5, 4}, 4, colGrill, true });        // Front Grille
+        outFaces.push_back({ {1, 0, 12, 13}, 4, colTail, true });       // Rear Tail Panel
 
         // Side Panels
-        outFaces.push_back({ {0, 3, 4, 12}, 4, colBodyDark, false });    // Left Side Lower
-        outFaces.push_back({ {2, 1, 13, 5}, 4, colBodyDark, false });    // Right Side Lower
-        outFaces.push_back({ {7, 8, 11, 15}, 4, colGlass, false });      // Left Cabin Window
-        outFaces.push_back({ {9, 6, 14, 10}, 4, colGlass, false });      // Right Cabin Window
+        outFaces.push_back({ {0, 3, 4, 12}, 4, colBodyDark, true });    // Left Side Lower
+        outFaces.push_back({ {2, 1, 13, 5}, 4, colBodyDark, true });    // Right Side Lower
+        outFaces.push_back({ {7, 8, 11, 15}, 4, colGlass, true });      // Left Cabin Window
+        outFaces.push_back({ {9, 6, 14, 10}, 4, colGlass, true });      // Right Cabin Window
 
         // Supercharger Scoop
-        outFaces.push_back({ {20, 21, 22, 23}, 4, colChrome, false });   // Blower Top
-        outFaces.push_back({ {16, 17, 21, 20}, 4, colChrome, false });   // Blower Front
-        outFaces.push_back({ {19, 16, 20, 23}, 4, colChrome, false });   // Blower Left
-        outFaces.push_back({ {17, 18, 22, 21}, 4, colChrome, false });   // Blower Right
+        outFaces.push_back({ {20, 21, 22, 23}, 4, colChrome, true });   // Blower Top
+        outFaces.push_back({ {16, 17, 21, 20}, 4, colChrome, true });   // Blower Front
+        outFaces.push_back({ {19, 16, 20, 23}, 4, colChrome, true });   // Blower Left
+        outFaces.push_back({ {17, 18, 22, 21}, 4, colChrome, true });   // Blower Right
 
         // Ramming Bull-Bar
         outFaces.push_back({ {24, 29, 28, 27}, 4, colBullbar, true });   // Ram Left Wedge
         outFaces.push_back({ {29, 25, 26, 28}, 4, colBullbar, true });   // Ram Right Wedge
 
         // --- 4 Independent 3D Wheels ---
-        // Wheel Centers: FL, FR, RL, RR
         Vec3 wheelCenters[4] = {
             Vec3(-1.02f, 0.42f,  1.35f), // Front Left
             Vec3( 1.02f, 0.42f,  1.35f), // Front Right
-            Vec3(-1.02f, 0.46f, -1.35f), // Rear Left (wider/larger)
+            Vec3(-1.02f, 0.46f, -1.35f), // Rear Left
             Vec3( 1.02f, 0.46f, -1.35f)  // Rear Right
         };
 
         for (int w = 0; w < 4; w++) {
-            float r = (w >= 2) ? 0.46f : 0.42f; // Rear wheels are larger off-road tires
+            float r = (w >= 2) ? 0.46f : 0.42f;
             float width = 0.28f;
             float sideSign = (wheelCenters[w].x > 0.0f) ? 1.0f : -1.0f;
 
             int baseIdx = (int)outVertices.size();
-            // Generate 8-segment cylinder for tire
             for (int s = 0; s < 8; s++) {
                 float angle = s * (6.283185f / 8.0f);
                 float dy = sinf(angle) * r;
                 float dz = cosf(angle) * r;
 
-                // Outer face vertex
                 outVertices.push_back(Vec3(wheelCenters[w].x + sideSign * width, wheelCenters[w].y + dy, wheelCenters[w].z + dz));
-                // Inner face vertex
                 outVertices.push_back(Vec3(wheelCenters[w].x, wheelCenters[w].y + dy, wheelCenters[w].z + dz));
             }
 
-            // Hub center vertex
             int hubIdx = (int)outVertices.size();
             outVertices.push_back(Vec3(wheelCenters[w].x + sideSign * (width + 0.02f), wheelCenters[w].y, wheelCenters[w].z));
 
-            uint32_t colTread = IM_COL32(22, 22, 24, 255); // Dark offroad rubber
-            uint32_t colRim   = IM_COL32(140, 145, 155, 255); // Steel rim
+            uint32_t colTread = IM_COL32(24, 24, 26, 255);
+            uint32_t colRim   = IM_COL32(150, 155, 165, 255);
 
             for (int s = 0; s < 8; s++) {
                 int next = (s + 1) % 8;
@@ -168,10 +163,8 @@ public:
                 int v2 = baseIdx + next * 2 + 1;
                 int v3 = baseIdx + next * 2;
 
-                // Tread face
-                outFaces.push_back({ {v0, v1, v2, v3}, 4, colTread, false });
-                // Outer Rim triangle
-                outFaces.push_back({ {hubIdx, v0, v3, 0}, 3, colRim, false });
+                outFaces.push_back({ {v0, v1, v2, v3}, 4, colTread, true });
+                outFaces.push_back({ {hubIdx, v0, v3, 0}, 3, colRim, true });
             }
         }
     }
@@ -226,37 +219,37 @@ public:
         outVertices.push_back(Vec3( 0.10f, 0.00f,  0.18f)); // 27
 
         // Colors
-        uint32_t colSkin    = IM_COL32(215, 175, 140, 255); // Wasteland weathered skin
-        uint32_t colGoggles = IM_COL32(25, 25, 28, 255);    // Tactical goggles
-        uint32_t colJacket  = IM_COL32(65, 45, 30, 255);    // Worn brown leather jacket
-        uint32_t colVest    = IM_COL32(35, 38, 40, 255);    // Tactical combat vest
-        uint32_t colSteel   = IM_COL32(160, 165, 175, 255); // Left Shoulder Metal Pauldron
-        uint32_t colPants   = IM_COL32(40, 42, 45, 255);    // Dark combat trousers
-        uint32_t colBoots   = IM_COL32(28, 26, 24, 255);    // Heavy combat boots
+        uint32_t colSkin    = IM_COL32(220, 180, 145, 255);
+        uint32_t colGoggles = IM_COL32(25, 25, 28, 255);
+        uint32_t colJacket  = IM_COL32(75, 52, 35, 255);
+        uint32_t colVest    = IM_COL32(38, 40, 42, 255);
+        uint32_t colSteel   = IM_COL32(170, 175, 185, 255);
+        uint32_t colPants   = IM_COL32(42, 45, 48, 255);
+        uint32_t colBoots   = IM_COL32(28, 26, 24, 255);
 
         // Head Faces
-        outFaces.push_back({ {3, 2, 6, 7}, 4, colGoggles, false }); // Face / Goggles
-        outFaces.push_back({ {2, 1, 5, 6}, 4, colSkin, false });    // Right Head
-        outFaces.push_back({ {0, 3, 7, 4}, 4, colSkin, false });    // Left Head
-        outFaces.push_back({ {1, 0, 4, 5}, 4, colSkin, false });    // Back Head
-        outFaces.push_back({ {7, 6, 5, 4}, 4, colSkin, false });    // Top Head
+        outFaces.push_back({ {3, 2, 6, 7}, 4, colGoggles, true }); // Face / Goggles
+        outFaces.push_back({ {2, 1, 5, 6}, 4, colSkin, true });    // Right Head
+        outFaces.push_back({ {0, 3, 7, 4}, 4, colSkin, true });    // Left Head
+        outFaces.push_back({ {1, 0, 4, 5}, 4, colSkin, true });    // Back Head
+        outFaces.push_back({ {7, 6, 5, 4}, 4, colSkin, true });    // Top Head
 
         // Torso Faces
-        outFaces.push_back({ {11, 10, 14, 15}, 4, colVest, false });   // Chest / Vest
-        outFaces.push_back({ {9, 8, 12, 13}, 4, colJacket, false });   // Back Jacket
-        outFaces.push_back({ {8, 11, 15, 12}, 4, colJacket, false });  // Left Torso
-        outFaces.push_back({ {10, 9, 13, 14}, 4, colJacket, false });  // Right Torso
+        outFaces.push_back({ {11, 10, 14, 15}, 4, colVest, true });   // Chest / Vest
+        outFaces.push_back({ {9, 8, 12, 13}, 4, colJacket, true });   // Back Jacket
+        outFaces.push_back({ {8, 11, 15, 12}, 4, colJacket, true });  // Left Torso
+        outFaces.push_back({ {10, 9, 13, 14}, 4, colJacket, true });  // Right Torso
 
         // Shoulder Pauldron
         outFaces.push_back({ {16, 17, 18, 19}, 4, colSteel, true });   // Metal Pauldron Plate
 
         // Legs & Boots
-        outFaces.push_back({ {20, 21, 9, 8}, 4, colPants, false });    // Left Leg Back
-        outFaces.push_back({ {23, 22, 10, 11}, 4, colPants, false });  // Left Leg Front
-        outFaces.push_back({ {24, 25, 9, 8}, 4, colPants, false });    // Right Leg Back
-        outFaces.push_back({ {27, 26, 10, 11}, 4, colPants, false });  // Right Leg Front
-        outFaces.push_back({ {20, 21, 22, 23}, 4, colBoots, false });  // Left Boot Sole
-        outFaces.push_back({ {24, 25, 26, 27}, 4, colBoots, false });  // Right Boot Sole
+        outFaces.push_back({ {20, 21, 9, 8}, 4, colPants, true });    // Left Leg Back
+        outFaces.push_back({ {23, 22, 10, 11}, 4, colPants, true });  // Left Leg Front
+        outFaces.push_back({ {24, 25, 9, 8}, 4, colPants, true });    // Right Leg Back
+        outFaces.push_back({ {27, 26, 10, 11}, 4, colPants, true });  // Right Leg Front
+        outFaces.push_back({ {20, 21, 22, 23}, 4, colBoots, true });  // Left Boot Sole
+        outFaces.push_back({ {24, 25, 26, 27}, 4, colBoots, true });  // Right Boot Sole
     }
 };
 

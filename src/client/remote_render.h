@@ -27,7 +27,10 @@ struct RemotePlayer {
 };
 
 static std::unordered_map<uint32_t, RemotePlayer> g_remotePlayers;
-static int g_renderMode = 0; // 0 = Auto (Vehicle when moving/in-car, Character on foot), 1 = Force Vehicle, 2 = Force Character
+static int g_renderMode = 0; // 0 = Auto, 1 = Force Vehicle, 2 = Force Character
+static float g_camDist = 4.5f;
+static float g_camHeight = 1.8f;
+static float g_camPitch = -0.22f; // ~12.6 degrees looking down at car/character
 
 inline void UpdateOrAddPlayer(uint32_t clientId, float x, float y, float z, float health,
                               float qx = 0.0f, float qy = 0.0f, float qz = 0.0f, float qw = 1.0f,
@@ -49,10 +52,10 @@ inline void UpdateOrAddPlayer(uint32_t clientId, float x, float y, float z, floa
     p.isInVehicle = inVeh;
     p.lastPacketTime = GetTickCount();
 
-    // Compute yaw from quaternion or velocity
+    // Compute yaw from quaternion or motion
     if (fabsf(qw) > 0.001f || fabsf(qy) > 0.001f) {
         p.yaw = atan2f(2.0f * (qw * qy + qx * qz), 1.0f - 2.0f * (qy * qy + qz * qz));
-    } else if (p.speed > 0.5f) {
+    } else if (p.speed > 0.3f) {
         p.yaw = atan2f(vx, vz);
     }
 
@@ -76,7 +79,7 @@ inline void InterpolatePositions(float dt) {
 // Renders the Full 3D Model (Magnum Opus Vehicle or Mad Max Character)
 // -----------------------------------------------------------------------------
 inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
-                                 float camX, float camY, float camZ, float camYaw,
+                                 float localX, float localY, float localZ, float camYaw,
                                  float screenW, float screenH) {
     using namespace Model3D;
 
@@ -85,7 +88,7 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
     if (g_renderMode == 1) isVehicle = true;
     else if (g_renderMode == 2) isVehicle = false;
     else {
-        isVehicle = (p.isInVehicle != 0) || (p.speed > 1.2f) || (p.posY < -0.5f || p.posY > 5.0f);
+        isVehicle = (p.isInVehicle != 0) || (p.speed > 1.0f);
     }
 
     static std::vector<Vec3> s_vMeshVertices;
@@ -103,13 +106,18 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
     const std::vector<Vec3>& meshVertices = isVehicle ? s_vMeshVertices : s_cMeshVertices;
     const std::vector<PolyFace>& meshFaces = isVehicle ? s_vMeshFaces : s_cMeshFaces;
 
+    // Terrain ground-snap safeguard: if altitude delta > 30m, clamp to local ground level
+    float renderPosY = p.posY;
+    if (fabsf(renderPosY - localY) > 30.0f && localY > 300.0f) {
+        renderPosY = localY;
+    }
+
     // 2. Build Peer Rotation Matrix
     float R[3][3];
     float qx = p.quatX, qy = p.quatY, qz = p.quatZ, qw = p.quatW;
     float qLenSq = qx * qx + qy * qy + qz * qz + qw * qw;
 
     if (qLenSq > 0.5f && qLenSq < 2.0f) {
-        // Construct from quaternion
         R[0][0] = 1.0f - 2.0f * (qy * qy + qz * qz);
         R[0][1] = 2.0f * (qx * qy - qz * qw);
         R[0][2] = 2.0f * (qx * qz + qy * qw);
@@ -122,7 +130,6 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
         R[2][1] = 2.0f * (qy * qz + qx * qw);
         R[2][2] = 1.0f - 2.0f * (qx * qx + qy * qy);
     } else {
-        // Fallback: Heading yaw
         float cosY = cosf(p.yaw);
         float sinY = sinf(p.yaw);
         R[0][0] =  cosY; R[0][1] = 0.0f; R[0][2] = sinY;
@@ -130,7 +137,12 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
         R[2][0] = -sinY; R[2][1] = 0.0f; R[2][2] = cosY;
     }
 
-    // 3. Transform All 3D Vertices to World Space and Screen Space
+    // Camera in world space
+    float camX = localX - sinf(camYaw) * g_camDist;
+    float camZ = localZ - cosf(camYaw) * g_camDist;
+    float camY = localY + g_camHeight;
+
+    // 3. Transform All 3D Vertices to Camera & Screen Space
     struct ProjectedVertex {
         Vec3 world;
         Vec3 cam;
@@ -143,6 +155,8 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
     float fovFactor = 0.767f; // ~75 deg FOV
     float cosCam = cosf(camYaw);
     float sinCam = sinf(camYaw);
+    float cosP = cosf(g_camPitch);
+    float sinP = sinf(g_camPitch);
 
     for (size_t i = 0; i < meshVertices.size(); i++) {
         const Vec3& v = meshVertices[i];
@@ -150,20 +164,24 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
 
         // A. Local to World
         pv.world.x = p.posX + (R[0][0] * v.x + R[0][1] * v.y + R[0][2] * v.z);
-        pv.world.y = p.posY + (R[1][0] * v.x + R[1][1] * v.y + R[1][2] * v.z);
+        pv.world.y = renderPosY + (R[1][0] * v.x + R[1][1] * v.y + R[1][2] * v.z);
         pv.world.z = p.posZ + (R[2][0] * v.x + R[2][1] * v.y + R[2][2] * v.z);
 
-        // B. World to Camera Space
+        // B. World to Camera Space with Yaw & Pitch
         float dx = pv.world.x - camX;
         float dy = pv.world.y - camY;
         float dz = pv.world.z - camZ;
 
-        pv.cam.x =  dx * cosCam - dz * sinCam;
-        pv.cam.y =  dy;
-        pv.cam.z =  dx * sinCam + dz * cosCam;
+        float x1 = dx * cosCam - dz * sinCam;
+        float z1 = dx * sinCam + dz * cosCam;
+        float y1 = dy;
+
+        pv.cam.x = x1;
+        pv.cam.y = y1 * cosP - z1 * sinP;
+        pv.cam.z = y1 * sinP + z1 * cosP;
 
         // C. Near-Plane Clipping
-        if (pv.cam.z < 0.6f) {
+        if (pv.cam.z < 0.4f) {
             pv.visible = false;
             continue;
         }
@@ -182,7 +200,6 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
     renderQueue.reserve(meshFaces.size());
 
     for (const auto& face : meshFaces) {
-        // Check if all vertices are visible
         bool faceVisible = true;
         for (int k = 0; k < face.count; k++) {
             if (!projectedVertices[face.v[k]].visible) {
@@ -201,19 +218,10 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
         Vec3 edge2 = pv2.world - pv0.world;
         Vec3 norm = edge1.Cross(edge2).Normalized();
 
-        // View Vector from Face to Camera
-        Vec3 viewVec = Vec3(camX - pv0.world.x, camY - pv0.world.y, camZ - pv0.world.z);
-
-        // Back-Face Culling (Skip faces facing away from camera unless double-sided)
-        if (!face.doubleSided && norm.Dot(viewVec) <= 0.0f) {
-            continue;
-        }
-
         // Sunlight Illumination Calculation
         float dotLight = max(0.0f, norm.Dot(sunDir));
-        float lightFactor = 0.30f + 0.70f * dotLight;
+        float lightFactor = 0.35f + 0.65f * dotLight;
 
-        // Extract RGBA and apply lighting
         uint32_t a = (face.baseColor >> 24) & 0xFF;
         uint32_t b = (face.baseColor >> 16) & 0xFF;
         uint32_t g = (face.baseColor >> 8)  & 0xFF;
@@ -226,7 +234,7 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
         RenderableFace rf;
         rf.count = face.count;
         rf.shadedColor = IM_COL32(r, g, b, a);
-        rf.edgeColor   = IM_COL32((uint32_t)(r * 0.5f), (uint32_t)(g * 0.5f), (uint32_t)(b * 0.5f), a);
+        rf.edgeColor   = IM_COL32((uint32_t)(r * 0.6f), (uint32_t)(g * 0.6f), (uint32_t)(b * 0.6f), a);
 
         float depthSum = 0.0f;
         for (int k = 0; k < face.count; k++) {
@@ -238,7 +246,7 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
         renderQueue.push_back(rf);
     }
 
-    // 6. Sort Faces by Depth (Painter's Algorithm: Draw Farthest Faces First)
+    // 6. Sort Faces by Depth (Painter's Algorithm)
     std::sort(renderQueue.begin(), renderQueue.end(), [](const RenderableFace& a, const RenderableFace& b) {
         return a.depth > b.depth;
     });
@@ -249,22 +257,26 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
         drawList->AddPolyline(rf.screenPts, rf.count, rf.edgeColor, ImDrawFlags_Closed, 1.2f);
     }
 
-    // 8. Dynamic Wasteland Particle Effects (Tire Dust & Heat Exhaust)
+    // 8. Dynamic Dust Particles Behind Wheels
     if (isVehicle && p.speed > 1.0f) {
-        // Draw trailing dust clouds behind rear tires
         for (int s = 0; s < 3; s++) {
             float trailDist = 1.5f + s * 1.2f;
             float dustX = p.posX - sinCam * trailDist + ((s % 2 == 0) ? -0.8f : 0.8f) * cosCam;
             float dustZ = p.posZ - cosCam * trailDist;
-            float dustY = p.posY + 0.3f + s * 0.2f;
+            float dustY = renderPosY + 0.3f + s * 0.2f;
 
             float ddx = dustX - camX;
             float ddz = dustZ - camZ;
-            float dCamZ = ddx * sinCam + ddz * cosCam;
+            float dx1 = ddx * cosCam - ddz * sinCam;
+            float dz1 = ddx * sinCam + ddz * cosCam;
+            float dy1 = dustY - camY;
+
+            float dCamZ = dy1 * sinP + dz1 * cosP;
             if (dCamZ > 1.0f) {
-                float dCamX = ddx * cosCam - ddz * sinCam;
+                float dCamX = dx1;
+                float dCamY = dy1 * cosP - dz1 * sinP;
                 float dScreenX = (screenW * 0.5f) + (dCamX / (dCamZ * fovFactor)) * (screenW * 0.5f);
-                float dScreenY = (screenH * 0.5f) - ((dustY - camY) / (dCamZ * fovFactor * (1.0f / aspect))) * (screenH * 0.5f);
+                float dScreenY = (screenH * 0.5f) - (dCamY / (dCamZ * fovFactor * (1.0f / aspect))) * (screenH * 0.5f);
                 float dustRadius = min(35.0f, max(8.0f, (60.0f / dCamZ) * (1.0f + s * 0.6f)));
 
                 drawList->AddCircleFilled(ImVec2(dScreenX, dScreenY), dustRadius, IM_COL32(180, 150, 110, 45 - s * 12));
@@ -273,19 +285,25 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
     }
 
     // 9. Overhead In-World 3D Name Tag & Health Bar
-    float tagWorldY = p.posY + (isVehicle ? 2.1f : 2.05f);
+    float tagWorldY = renderPosY + (isVehicle ? 2.1f : 2.05f);
     float tdx = p.posX - camX;
     float tdy = tagWorldY - camY;
     float tdz = p.posZ - camZ;
 
-    float tCamZ = tdx * sinCam + tdz * cosCam;
-    if (tCamZ > 0.8f) {
-        float tCamX = tdx * cosCam - tdz * sinCam;
+    float tx1 = tdx * cosCam - tdz * sinCam;
+    float tz1 = tdx * sinCam + tdz * cosCam;
+    float ty1 = tdy;
+
+    float tCamX = tx1;
+    float tCamY = ty1 * cosP - tz1 * sinP;
+    float tCamZ = ty1 * sinP + tz1 * cosP;
+
+    if (tCamZ > 0.5f) {
         float tagScreenX = (screenW * 0.5f) + (tCamX / (tCamZ * fovFactor)) * (screenW * 0.5f);
-        float tagScreenY = (screenH * 0.5f) - (tdy / (tCamZ * fovFactor * (1.0f / aspect))) * (screenH * 0.5f);
+        float tagScreenY = (screenH * 0.5f) - (tCamY / (tCamZ * fovFactor * (1.0f / aspect))) * (screenH * 0.5f);
 
         char nameTag[128];
-        float distToPeer = sqrtf((p.posX - camX) * (p.posX - camX) + (p.posZ - camZ) * (p.posZ - camZ));
+        float distToPeer = sqrtf((p.posX - localX) * (p.posX - localX) + (p.posZ - localZ) * (p.posZ - localZ));
         sprintf_s(nameTag, "%s #%u | %.1f m", isVehicle ? "Magnum Opus" : "Max (Peer)", p.clientId, distToPeer);
 
         ImVec2 tagSize = ImGui::CalcTextSize(nameTag);
@@ -325,14 +343,6 @@ inline void RenderWorldHUD(float localX, float localY, float localZ, float local
 
     DWORD now = GetTickCount();
 
-    // 2. Camera Placement: 3rd-person follow camera behind local vehicle/character
-    float camDist = 4.5f;
-    float camHeight = 1.8f;
-    float camX = localX - sinf(localYaw) * camDist;
-    float camZ = localZ - cosf(localYaw) * camDist;
-    float camY = localY + camHeight;
-    float camYaw = localYaw;
-
     for (const auto& pair : g_remotePlayers) {
         const auto& p = pair.second;
         if (now - p.lastPacketTime > 10000) continue;
@@ -351,8 +361,8 @@ inline void RenderWorldHUD(float localX, float localY, float localZ, float local
         drawList->AddCircleFilled(blipPos, 4.5f, IM_COL32(50, 255, 50, 255));
         drawList->AddCircle(blipPos, 5.5f, IM_COL32(255, 255, 255, 220), 16, 1.0f);
 
-        // Render the True 3D Model for this peer
-        Render3DModelForPeer(drawList, p, camX, camY, camZ, camYaw, screenW, screenH);
+        // Render the True 3D Model for this peer with pitch-corrected camera
+        Render3DModelForPeer(drawList, p, localX, localY, localZ, localYaw, screenW, screenH);
     }
 }
 

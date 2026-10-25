@@ -8,10 +8,11 @@
 namespace HavokSync {
 
 struct HavokTransform {
-    float rot[3][3];    // +0x20 3x3 rotation matrix
-    float pos[3];       // +0x50 position vector (X, Y, Z)
-    float vel[3];       // +0x60 velocity vector
+    float rot[3][3];    // 3x3 rotation matrix
+    float pos[3];       // position vector (X, Y, Z)
+    float vel[3];       // velocity vector (m/s)
     float yaw;          // Facing angle in radians
+    float pitch;        // Vertical tilt in radians
     float speed;        // Speed in m/s
     bool isLocked;
 };
@@ -20,13 +21,13 @@ static uintptr_t g_pHavokMotionInstance = 0;
 static HavokTransform g_localTransform = { 0 };
 static uint8_t s_scanBuffer[64 * 1024]; // Static buffer: zero dynamic heap allocation
 
-// Scan committed memory below 4 GB for hkpCharacterMotion (VMT 0x1413FB128)
+// Scan committed memory below 4 GB for active Wasteland hkpCharacterMotion (VMT 0x1413FB128)
 inline bool FindHavokMotion(uintptr_t gameBase) {
     uintptr_t targetVmt = gameBase + 0x013FB128; // hkpCharacterMotion VMT
 
     MEMORY_BASIC_INFORMATION mbi;
     uintptr_t currentAddr = 0x10000;
-    const uintptr_t maxScanAddr = 0x0000000100000000ULL; // Scan lower 4 GB only (where Havok resides)
+    const uintptr_t maxScanAddr = 0x0000000100000000ULL; // Scan lower 4 GB only
 
     while (currentAddr < maxScanAddr) {
         if (VirtualQuery((LPCVOID)currentAddr, &mbi, sizeof(mbi)) == sizeof(mbi)) {
@@ -42,10 +43,17 @@ inline bool FindHavokMotion(uintptr_t gameBase) {
                             uintptr_t vmt = *reinterpret_cast<uintptr_t*>(&s_scanBuffer[i]);
                             if (vmt == targetVmt) {
                                 float* pPos = reinterpret_cast<float*>(&s_scanBuffer[i + 0x50]);
-                                // Altitude in wasteland is typically between -100m and 3000m
-                                if (pPos[1] > -100.0f && pPos[1] < 3000.0f && abs(pPos[1]) > 0.01f) {
+                                
+                                // CRITICAL: Mad Max Wasteland ground level is strictly 400m - 850m.
+                                // Rejects dummy objects at 0.0m or underground props!
+                                if (pPos[1] >= 400.0f && pPos[1] <= 850.0f &&
+                                    (abs(pPos[0]) > 0.1f || abs(pPos[2]) > 0.1f)) {
+                                    
                                     g_pHavokMotionInstance = currentAddr + offset + i;
                                     g_localTransform.isLocked = true;
+                                    g_localTransform.pos[0] = pPos[0];
+                                    g_localTransform.pos[1] = pPos[1];
+                                    g_localTransform.pos[2] = pPos[2];
                                     return true;
                                 }
                             }
@@ -61,12 +69,12 @@ inline bool FindHavokMotion(uintptr_t gameBase) {
     return false;
 }
 
-// Read current Havok motion state (throttled search: at most once every 3 seconds if not locked)
+// Read current Havok motion state (with continuous altitude and non-zero validation)
 inline bool UpdateLocalTransform(uintptr_t gameBase) {
     if (!g_pHavokMotionInstance) {
         static DWORD s_lastScanTime = 0;
         DWORD now = GetTickCount();
-        if (now - s_lastScanTime < 3000) return false;
+        if (now - s_lastScanTime < 1500) return false;
         s_lastScanTime = now;
 
         FindHavokMotion(gameBase);
@@ -76,6 +84,54 @@ inline bool UpdateLocalTransform(uintptr_t gameBase) {
     uint8_t motionData[0x80];
     SIZE_T read = 0;
     if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)g_pHavokMotionInstance, motionData, sizeof(motionData), &read) && read == sizeof(motionData)) {
+        // Read Position (+0x50)
+        float* pPos = reinterpret_cast<float*>(&motionData[0x50]);
+
+        // Validate that this object is still in the active wasteland play area
+        if (pPos[1] < 400.0f || pPos[1] > 850.0f || (pPos[0] == 0.0f && pPos[2] == 0.0f)) {
+            // Position became invalid or 0,0,0! Unlock so next cycle scans for the real object
+            g_pHavokMotionInstance = 0;
+            g_localTransform.isLocked = false;
+            return false;
+        }
+
+        // Frame-delta velocity & speed calculation (100% reliable, zero artifacting)
+        static float s_lastPos[3] = { 0 };
+        static DWORD s_lastTime = 0;
+        DWORD now = GetTickCount();
+        float dt = (now - s_lastTime) * 0.001f;
+
+        if (dt > 0.005f && dt < 0.5f && s_lastPos[1] >= 400.0f) {
+            float dx = pPos[0] - s_lastPos[0];
+            float dy = pPos[1] - s_lastPos[1];
+            float dz = pPos[2] - s_lastPos[2];
+            float distMoved = sqrtf(dx * dx + dy * dy + dz * dz);
+            
+            g_localTransform.vel[0] = dx / dt;
+            g_localTransform.vel[1] = dy / dt;
+            g_localTransform.vel[2] = dz / dt;
+            g_localTransform.speed = distMoved / dt;
+
+            // Update heading yaw in direction of travel
+            if (distMoved > 0.04f) {
+                g_localTransform.yaw = atan2f(dx, dz);
+            }
+        } else {
+            g_localTransform.speed = 0.0f;
+            g_localTransform.vel[0] = 0.0f;
+            g_localTransform.vel[1] = 0.0f;
+            g_localTransform.vel[2] = 0.0f;
+        }
+
+        s_lastPos[0] = pPos[0];
+        s_lastPos[1] = pPos[1];
+        s_lastPos[2] = pPos[2];
+        s_lastTime = now;
+
+        g_localTransform.pos[0] = pPos[0];
+        g_localTransform.pos[1] = pPos[1];
+        g_localTransform.pos[2] = pPos[2];
+
         // Read 3x3 rotation matrix (+0x20)
         float* pRot = reinterpret_cast<float*>(&motionData[0x20]);
         for (int r = 0; r < 3; r++) {
@@ -84,21 +140,6 @@ inline bool UpdateLocalTransform(uintptr_t gameBase) {
             }
         }
 
-        // Read Position (+0x50)
-        float* pPos = reinterpret_cast<float*>(&motionData[0x50]);
-        g_localTransform.pos[0] = pPos[0];
-        g_localTransform.pos[1] = pPos[1];
-        g_localTransform.pos[2] = pPos[2];
-
-        // Read Velocity (+0x60)
-        float* pVel = reinterpret_cast<float*>(&motionData[0x60]);
-        g_localTransform.vel[0] = pVel[0];
-        g_localTransform.vel[1] = pVel[1];
-        g_localTransform.vel[2] = pVel[2];
-
-        // Compute yaw and speed
-        g_localTransform.yaw = atan2f(g_localTransform.rot[0][2], g_localTransform.rot[2][2]);
-        g_localTransform.speed = sqrtf(pVel[0] * pVel[0] + pVel[1] * pVel[1] + pVel[2] * pVel[2]);
         g_localTransform.isLocked = true;
         return true;
     } else {

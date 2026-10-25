@@ -193,8 +193,11 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
         g_localPlayerPos[1] = HavokSync::g_localTransform.pos[1];
         g_localPlayerPos[2] = HavokSync::g_localTransform.pos[2];
         g_bMemoryHooked = true;
-    } else if (AutoScanner::g_bScanningActive) {
+    } else {
         // Priority 2: Fallback heuristic scanner
+        if (!AutoScanner::g_bScanningActive) {
+            AutoScanner::StartHeuristicScan();
+        }
         AutoScanner::UpdateCandidates(g_localPlayerPos);
         if (AutoScanner::g_selectedPlayerAddress != 0) {
             g_targetCandidateAddress = AutoScanner::g_selectedPlayerAddress;
@@ -202,9 +205,7 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             if (!EntityInspector::g_bInspected) {
                 EntityInspector::InspectPlayerObject(g_targetCandidateAddress, g_gameBase, g_gameSize);
             }
-        }
-    } else if (g_bMemoryHooked && g_targetCandidateAddress != 0) {
-        if (!SafeReadCoords(g_targetCandidateAddress, g_localPlayerPos)) {
+        } else {
             g_bMemoryHooked = false;
         }
     }
@@ -285,6 +286,9 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             ImGui::Text("In-World 3D Model Rig (Magnum Opus / Max):");
             const char* modelModes[] = { "Auto (Vehicle in Motion / Max on Foot)", "Force 3D Magnum Opus Car", "Force 3D Mad Max Character" };
             ImGui::Combo("3D Model Render Mode", &RemoteRenderer::g_renderMode, modelModes, IM_ARRAYSIZE(modelModes));
+            ImGui::SliderFloat("Camera Distance", &RemoteRenderer::g_camDist, 2.0f, 12.0f, "%.1f m");
+            ImGui::SliderFloat("Camera Height", &RemoteRenderer::g_camHeight, 0.5f, 5.0f, "%.1f m");
+            ImGui::SliderFloat("Camera Pitch", &RemoteRenderer::g_camPitch, -0.60f, 0.20f, "%.2f rad");
 
             ImGui::Separator();
             ImGui::Text("3D Puppet & Native Engine Spawner:");
