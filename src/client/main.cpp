@@ -21,6 +21,7 @@
 #include "remote_render.h"
 #include "combat_sync.h"
 #include "puppet_spawner.h"
+#include "entity_inspector.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -188,6 +189,9 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
         if (AutoScanner::g_selectedPlayerAddress != 0) {
             g_targetCandidateAddress = AutoScanner::g_selectedPlayerAddress;
             g_bMemoryHooked = true;
+            if (!EntityInspector::g_bInspected) {
+                EntityInspector::InspectPlayerObject(g_targetCandidateAddress, g_gameBase, g_gameSize);
+            }
         }
     } else if (g_bMemoryHooked && g_targetCandidateAddress != 0) {
         if (!SafeReadCoords(g_targetCandidateAddress, g_localPlayerPos)) {
@@ -336,6 +340,22 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
                 ImGui::Text("X (East/West):   %.3f", g_localPlayerPos[0]);
                 ImGui::Text("Y (Altitude/Up): %.3f", g_localPlayerPos[1]);
                 ImGui::Text("Z (North/South): %.3f", g_localPlayerPos[2]);
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Engine Entity Inspector (REA Reverse Engineering):");
+            ImGui::TextWrapped("%s", EntityInspector::g_diagnosticLog);
+            if (EntityInspector::g_playerEntity.isValid) {
+                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Object Class: %s", EntityInspector::g_playerEntity.className);
+                ImGui::Text("Base Pointer: 0x%p", (void*)EntityInspector::g_playerEntity.baseAddress);
+                ImGui::Text("VMT Address:  0x%p", (void*)EntityInspector::g_playerEntity.vmtAddress);
+                ImGui::Text("Coord Offset: +0x%tX", EntityInspector::g_playerEntity.coordOffset);
+                if (ImGui::TreeNode("Inspect Internal Member Pointers")) {
+                    for (int i = 0; i < 8; i++) {
+                        ImGui::Text("  [+0x%02X] 0x%016llX", i * 8, EntityInspector::g_playerEntity.memberPointers[i]);
+                    }
+                    ImGui::TreePop();
+                }
             }
 
             ImGui::End();

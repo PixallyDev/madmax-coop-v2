@@ -46,6 +46,7 @@ inline void InterpolatePositions(float dt) {
     }
 }
 
+// Renders the 3D in-world Wasteland compass and 3D puppet proxy
 inline void RenderWorldHUD(float localX, float localY, float localZ) {
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
     if (!drawList) return;
@@ -73,7 +74,7 @@ inline void RenderWorldHUD(float localX, float localY, float localZ) {
         float dy = p.posY - localY;
         float dist = sqrtf(dx * dx + dz * dz + dy * dy);
 
-        // Compass blip
+        // Top compass blip
         float normX = dx / max(1.0f, dist);
         float normZ = dz / max(1.0f, dist);
         float blipDist = min(20.0f, (dist / 100.0f) * 20.0f);
@@ -82,9 +83,9 @@ inline void RenderWorldHUD(float localX, float localY, float localZ) {
         drawList->AddCircleFilled(blipPos, 4.5f, IM_COL32(50, 255, 50, 255));
         drawList->AddCircle(blipPos, 5.5f, IM_COL32(255, 255, 255, 220), 16, 1.0f);
 
-        // In-world nametag banner
+        // Distance & Status banner
         char tag[128];
-        sprintf_s(tag, "[P2] Furiosa (Client #%u) | %.1f m", p.clientId, dist);
+        sprintf_s(tag, "[P2 Peer #%u] %.1f m | Co-Op Sync Active", p.clientId, dist);
         
         ImVec2 textSize = ImGui::CalcTextSize(tag);
         float tagX = compassCenterX - textSize.x * 0.5f;

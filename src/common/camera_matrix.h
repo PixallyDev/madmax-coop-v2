@@ -21,7 +21,7 @@ inline bool WorldToScreen(const Vector3& worldPos, const Matrix4x4& viewProj, fl
     Vector4 clipCoords;
     clipCoords.x = worldPos.x * viewProj.m[0][0] + worldPos.y * viewProj.m[1][0] + worldPos.z * viewProj.m[2][0] + viewProj.m[3][0];
     clipCoords.y = worldPos.x * viewProj.m[0][1] + worldPos.y * viewProj.m[1][1] + worldPos.z * viewProj.m[2][1] + viewProj.m[3][1];
-    clipCoords.z = worldPos.x * worldPos.z * viewProj.m[2][2] + viewProj.m[3][2];
+    clipCoords.z = worldPos.x * viewProj.m[0][2] + worldPos.y * viewProj.m[1][2] + worldPos.z * viewProj.m[2][2] + viewProj.m[3][2];
     clipCoords.w = worldPos.x * viewProj.m[0][3] + worldPos.y * viewProj.m[1][3] + worldPos.z * viewProj.m[2][3] + viewProj.m[3][3];
 
     if (clipCoords.w < 0.1f) return false;
@@ -31,11 +31,11 @@ inline bool WorldToScreen(const Vector3& worldPos, const Matrix4x4& viewProj, fl
     ndc.y = clipCoords.y / clipCoords.w;
     ndc.z = clipCoords.z / clipCoords.w;
 
-    outScreen.x = (screenWidth / 2.0f * ndc.x) + (ndc.x + screenWidth / 2.0f);
-    outScreen.y = -(screenHeight / 2.0f * ndc.y) + (ndc.y + screenHeight / 2.0f);
+    outScreen.x = (ndc.x + 1.0f) * 0.5f * screenWidth;
+    outScreen.y = (1.0f - ndc.y) * 0.5f * screenHeight;
     outScreen.z = ndc.z;
 
-    return true;
+    return (ndc.z >= 0.0f && ndc.z <= 1.0f);
 }
 
 }
