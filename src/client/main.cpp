@@ -345,6 +345,12 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             ImGui::Separator();
             ImGui::Text("Engine Entity Inspector (REA Reverse Engineering):");
             ImGui::TextWrapped("%s", EntityInspector::g_diagnosticLog);
+            if (ImGui::Button("Re-Inspect Memory")) {
+                EntityInspector::g_bInspected = false;
+                if (g_targetCandidateAddress != 0) {
+                    EntityInspector::InspectPlayerObject(g_targetCandidateAddress, g_gameBase, g_gameSize);
+                }
+            }
             if (EntityInspector::g_playerEntity.isValid) {
                 ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Object Class: %s", EntityInspector::g_playerEntity.className);
                 ImGui::Text("Base Pointer: 0x%p", (void*)EntityInspector::g_playerEntity.baseAddress);

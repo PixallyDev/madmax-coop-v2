@@ -17,12 +17,14 @@ static std::vector<CandidateCoord> g_candidates;
 static uintptr_t g_selectedPlayerAddress = 0;
 static bool g_bScanningActive = false;
 
-// Scan heap/writable memory for plausible Wasteland player coordinates:
-// In Mad Max, coordinates are typically:
-// -50,000.0f < X < 50,000.0f
-// -1,000.0f < Y (Altitude) < 5,000.0f
-// -50,000.0f < Z < 50,000.0f
-// Followed by valid orientation floats or pointers
+inline float curCoords(uintptr_t addr, int idx) {
+    float val = 0.0f;
+    SIZE_T read = 0;
+    ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(addr + idx * sizeof(float)), &val, sizeof(float), &read);
+    return val;
+}
+
+// Scan heap & writable memory for plausible Wasteland player coordinates
 inline void StartHeuristicScan() {
     g_candidates.clear();
     g_selectedPlayerAddress = 0;
@@ -36,9 +38,8 @@ inline void StartHeuristicScan() {
 
     while (currentAddr < (uintptr_t)si.lpMaximumApplicationAddress) {
         if (VirtualQuery((LPCVOID)currentAddr, &mbi, sizeof(mbi)) == sizeof(mbi)) {
-            // Only scan commit, readable & writable non-page-guarded memory (Heap, Data)
+            // Only scan commit, readable & writable non-page-guarded memory (Heap, Data, Stack)
             if (mbi.State == MEM_COMMIT && (mbi.Protect == PAGE_READWRITE) && !(mbi.Protect & PAGE_GUARD)) {
-                // Read chunks of 64 KB
                 const size_t chunkSize = 64 * 1024;
                 std::vector<uint8_t> buffer(chunkSize);
 
@@ -59,18 +60,18 @@ inline void StartHeuristicScan() {
                                 
                                 uintptr_t candAddr = currentAddr + offset + i;
                                 g_candidates.push_back({ candAddr, x, y, z, 0.0f, 1 });
-                                if (g_candidates.size() >= 500) break; // Keep manageable set
+                                if (g_candidates.size() >= 2000) break;
                             }
                         }
                     }
-                    if (g_candidates.size() >= 500) break;
+                    if (g_candidates.size() >= 2000) break;
                 }
             }
             currentAddr = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
         } else {
             currentAddr += 0x1000;
         }
-        if (g_candidates.size() >= 500) break;
+        if (g_candidates.size() >= 2000) break;
     }
 }
 
@@ -101,23 +102,23 @@ inline void UpdateCandidates(float* outCoords) {
             float dx = cur[0] - it->lastX;
             float dy = cur[1] - it->lastY;
             float dz = cur[2] - it->lastZ;
-            float distSq = dx*dx + dy*dy + dz*dz;
+            float dist = sqrtf(dx * dx + dz * dz + dy * dy);
 
-            // Player walking moves ~0.1 to 15.0 meters per frame, not astronomical jumps
-            if (distSq > 0.01f && distSq < 400.0f) {
-                it->variance += distSq;
+            // Realistic walking speed delta per frame: between 0.02m and 15.0m
+            if (dist > 0.02f && dist < 15.0f) {
+                it->variance += dist;
                 it->samples++;
                 it->lastX = cur[0];
                 it->lastY = cur[1];
                 it->lastZ = cur[2];
 
-                if (it->variance > maxMovement && it->samples >= 5) {
+                if (it->variance > maxMovement && it->samples >= 3) {
                     maxMovement = it->variance;
                     bestCandidate = it->address;
                 }
                 ++it;
-            } else if (distSq >= 400.0f) {
-                it = g_candidates.erase(it); // Erratic garbage memory, prune
+            } else if (dist > 50.0f) {
+                it = g_candidates.erase(it); // Garbage noise
             } else {
                 ++it;
             }
@@ -126,10 +127,11 @@ inline void UpdateCandidates(float* outCoords) {
         }
     }
 
-    if (bestCandidate != 0) {
+    if (bestCandidate != 0 && maxMovement > 1.0f) {
         g_selectedPlayerAddress = bestCandidate;
-        SIZE_T read = 0;
-        ReadProcessMemory(GetCurrentProcess(), (LPCVOID)g_selectedPlayerAddress, outCoords, sizeof(float)*3, &read);
+        outCoords[0] = curCoords(bestCandidate, 0);
+        outCoords[1] = curCoords(bestCandidate, 1);
+        outCoords[2] = curCoords(bestCandidate, 2);
     }
 }
 
