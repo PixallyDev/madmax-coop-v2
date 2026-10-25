@@ -3,8 +3,8 @@
 #include <iostream>
 #include <vector>
 #include <sstream>
+#include <fstream>
 #include <iomanip>
-#include <algorithm>
 #include "vmt_catalog.h"
 
 namespace EntityInspector {
@@ -24,6 +24,29 @@ static char g_diagnosticLog[1024] = "Waiting for coordinate lock...";
 inline bool SafeReadPtr(uintptr_t addr, uintptr_t* outVal) {
     SIZE_T read = 0;
     return ReadProcessMemory(GetCurrentProcess(), (LPCVOID)addr, outVal, sizeof(uintptr_t), &read) && read == sizeof(uintptr_t);
+}
+
+inline void LogDiscoveryToFile() {
+    std::ofstream log("madmax_entity_discovery.log", std::ios::out | std::ios::trunc);
+    if (!log.is_open()) return;
+
+    log << "=== Mad Max Co-Op Autonomous Entity Discovery Log ===\n";
+    log << "Total Objects Discovered in Active Call Stack: " << g_discoveredList.size() << "\n\n";
+
+    for (size_t i = 0; i < g_discoveredList.size(); i++) {
+        const auto& ent = g_discoveredList[i];
+        log << "[" << (i + 1) << "] Class: " << ent.className
+            << " @ 0x" << std::hex << ent.baseAddress
+            << " (VMT: 0x" << ent.vmtAddress
+            << ", Stack Offset: " << std::dec << ent.stackOffset << ")\n";
+        
+        for (int m = 0; m < 8; m++) {
+            log << "    [+0x" << std::hex << std::setw(2) << std::setfill('0') << (m * 8)
+                << "] = 0x" << std::setw(16) << std::setfill('0') << ent.memberPointers[m] << "\n";
+        }
+        log << "\n";
+    }
+    log.close();
 }
 
 // Deep inspects the memory around coordAddress (both direct struct and all stack frame pointers)
@@ -64,7 +87,6 @@ inline bool InspectPlayerObject(uintptr_t coordAddress, uintptr_t gameBase, size
                     if (targetVmt >= gameBase && targetVmt < (gameBase + gameSize)) {
                         const char* clsName = VMTCatalog::LookupClassByVMT(targetVmt, gameBase);
                         if (clsName) {
-                            // Check if this object is already in list
                             bool alreadyIn = false;
                             for (const auto& existing : g_discoveredList) {
                                 if (existing.baseAddress == stackVal) {
@@ -92,7 +114,9 @@ inline bool InspectPlayerObject(uintptr_t coordAddress, uintptr_t gameBase, size
 
     if (!g_discoveredList.empty()) {
         sprintf_s(g_diagnosticLog, sizeof(g_diagnosticLog),
-            "Identified %zu Engine Objects in Active Call Stack!", g_discoveredList.size());
+            "Identified %zu Engine Objects in Active Call Stack! Logged to madmax_entity_discovery.log",
+            g_discoveredList.size());
+        LogDiscoveryToFile();
         g_bInspected = true;
         return true;
     }

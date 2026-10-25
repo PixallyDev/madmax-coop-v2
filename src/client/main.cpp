@@ -22,6 +22,7 @@
 #include "combat_sync.h"
 #include "puppet_spawner.h"
 #include "entity_inspector.h"
+#include "havok_sync.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -130,7 +131,9 @@ static void ServiceNetwork() {
                         g_bConnected = true;
                     } else if (hdr->opcode == OP_PLAYER_SYNC && hdr->payloadSize == sizeof(MsgPlayerSync)) {
                         MsgPlayerSync* sync = reinterpret_cast<MsgPlayerSync*>(payload);
-                        RemoteRenderer::UpdateOrAddPlayer(hdr->clientId, sync->posX, sync->posY, sync->posZ, sync->health);
+                        RemoteRenderer::UpdateOrAddPlayer(hdr->clientId, sync->posX, sync->posY, sync->posZ, sync->health,
+                                                          sync->quatX, sync->quatY, sync->quatZ, sync->quatW,
+                                                          sync->velX, sync->velY, sync->velZ);
                         PuppetSpawner::SetPuppetPosition(sync->posX, sync->posY, sync->posZ);
                     } else if (hdr->opcode == OP_COMBAT_EVENT && hdr->payloadSize == sizeof(MsgCombatEvent)) {
                         MsgCombatEvent* evt = reinterpret_cast<MsgCombatEvent*>(payload);
@@ -184,7 +187,14 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
 
     ServiceNetwork();
 
-    if (AutoScanner::g_bScanningActive) {
+    // Priority 1: Havok Physics Character Motion Telemetry
+    if (HavokSync::UpdateLocalTransform(g_gameBase)) {
+        g_localPlayerPos[0] = HavokSync::g_localTransform.pos[0];
+        g_localPlayerPos[1] = HavokSync::g_localTransform.pos[1];
+        g_localPlayerPos[2] = HavokSync::g_localTransform.pos[2];
+        g_bMemoryHooked = true;
+    } else if (AutoScanner::g_bScanningActive) {
+        // Priority 2: Fallback heuristic scanner
         AutoScanner::UpdateCandidates(g_localPlayerPos);
         if (AutoScanner::g_selectedPlayerAddress != 0) {
             g_targetCandidateAddress = AutoScanner::g_selectedPlayerAddress;
@@ -216,6 +226,15 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             sync->posX = g_localPlayerPos[0];
             sync->posY = g_localPlayerPos[1];
             sync->posZ = g_localPlayerPos[2];
+            if (HavokSync::g_localTransform.isLocked) {
+                HavokSync::MatrixToQuaternion(HavokSync::g_localTransform.rot, sync->quatX, sync->quatY, sync->quatZ, sync->quatW);
+                sync->velX = HavokSync::g_localTransform.vel[0];
+                sync->velY = HavokSync::g_localTransform.vel[1];
+                sync->velZ = HavokSync::g_localTransform.vel[2];
+            } else {
+                sync->quatX = 0.0f; sync->quatY = 0.0f; sync->quatZ = 0.0f; sync->quatW = 1.0f;
+                sync->velX = 0.0f; sync->velY = 0.0f; sync->velZ = 0.0f;
+            }
             sync->health = 100.0f;
             sync->isInVehicle = 0;
 
@@ -232,7 +251,7 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
         ImGui::NewFrame();
 
         if (g_bConnected) {
-            RemoteRenderer::RenderWorldHUD(g_localPlayerPos[0], g_localPlayerPos[1], g_localPlayerPos[2]);
+            RemoteRenderer::RenderWorldHUD(g_localPlayerPos[0], g_localPlayerPos[1], g_localPlayerPos[2], HavokSync::g_localTransform.yaw);
             CombatSync::RenderCombatFeed();
         }
 
@@ -340,6 +359,10 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
                 ImGui::Text("X (East/West):   %.3f", g_localPlayerPos[0]);
                 ImGui::Text("Y (Altitude/Up): %.3f", g_localPlayerPos[1]);
                 ImGui::Text("Z (North/South): %.3f", g_localPlayerPos[2]);
+                if (HavokSync::g_localTransform.isLocked) {
+                    ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Havok Rig: LOCKED @ 0x%p", (void*)HavokSync::g_pHavokMotionInstance);
+                    ImGui::Text("Speed: %.1f km/h | Yaw: %.1f deg", HavokSync::g_localTransform.speed * 3.6f, HavokSync::g_localTransform.yaw * 57.2958f);
+                }
             }
 
             ImGui::Separator();
