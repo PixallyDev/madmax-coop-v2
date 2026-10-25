@@ -16,6 +16,7 @@ struct CandidateCoord {
 static std::vector<CandidateCoord> g_candidates;
 static uintptr_t g_selectedPlayerAddress = 0;
 static bool g_bScanningActive = false;
+static uint8_t s_autoScanBuf[64 * 1024];
 
 inline float curCoords(uintptr_t addr, int idx) {
     float val = 0.0f;
@@ -24,34 +25,30 @@ inline float curCoords(uintptr_t addr, int idx) {
     return val;
 }
 
-// Scan heap & writable memory for plausible Wasteland player coordinates
+// Scan heap & writable memory below 4 GB for plausible Wasteland player coordinates
 inline void StartHeuristicScan() {
     g_candidates.clear();
     g_selectedPlayerAddress = 0;
     g_bScanningActive = true;
 
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-
     MEMORY_BASIC_INFORMATION mbi;
-    uintptr_t currentAddr = (uintptr_t)si.lpMinimumApplicationAddress;
+    uintptr_t currentAddr = 0x10000;
+    const uintptr_t maxScanAddr = 0x0000000100000000ULL; // Scan lower 4 GB only
 
-    while (currentAddr < (uintptr_t)si.lpMaximumApplicationAddress) {
+    while (currentAddr < maxScanAddr) {
         if (VirtualQuery((LPCVOID)currentAddr, &mbi, sizeof(mbi)) == sizeof(mbi)) {
-            // Only scan commit, readable & writable non-page-guarded memory (Heap, Data, Stack)
             if (mbi.State == MEM_COMMIT && (mbi.Protect == PAGE_READWRITE) && !(mbi.Protect & PAGE_GUARD)) {
-                const size_t chunkSize = 64 * 1024;
-                std::vector<uint8_t> buffer(chunkSize);
+                const size_t chunkSize = sizeof(s_autoScanBuf);
 
                 for (size_t offset = 0; offset < mbi.RegionSize; offset += chunkSize) {
                     size_t toRead = min(chunkSize, mbi.RegionSize - offset);
                     SIZE_T bytesRead = 0;
 
-                    if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(currentAddr + offset), buffer.data(), toRead, &bytesRead) && bytesRead > sizeof(float) * 3) {
+                    if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(currentAddr + offset), s_autoScanBuf, toRead, &bytesRead) && bytesRead > sizeof(float) * 3) {
                         for (size_t i = 0; i + sizeof(float) * 3 <= bytesRead; i += 4) {
-                            float x = *reinterpret_cast<float*>(&buffer[i]);
-                            float y = *reinterpret_cast<float*>(&buffer[i + 4]);
-                            float z = *reinterpret_cast<float*>(&buffer[i + 8]);
+                            float x = *reinterpret_cast<float*>(&s_autoScanBuf[i]);
+                            float y = *reinterpret_cast<float*>(&s_autoScanBuf[i + 4]);
+                            float z = *reinterpret_cast<float*>(&s_autoScanBuf[i + 8]);
 
                             // Realistic wasteland bounds & non-zero coordinates
                             if (x > -40000.0f && x < 40000.0f && abs(x) > 1.0f &&
@@ -69,7 +66,7 @@ inline void StartHeuristicScan() {
             }
             currentAddr = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
         } else {
-            currentAddr += 0x1000;
+            currentAddr += 0x10000;
         }
         if (g_candidates.size() >= 2000) break;
     }

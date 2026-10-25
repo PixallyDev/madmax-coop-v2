@@ -18,37 +18,31 @@ struct HavokTransform {
 
 static uintptr_t g_pHavokMotionInstance = 0;
 static HavokTransform g_localTransform = { 0 };
-static bool g_bScanningActive = false;
+static uint8_t s_scanBuffer[64 * 1024]; // Static buffer: zero dynamic heap allocation
 
-// Scan committed memory for hkpCharacterMotion (VMT 0x1413FB128)
+// Scan committed memory below 4 GB for hkpCharacterMotion (VMT 0x1413FB128)
 inline bool FindHavokMotion(uintptr_t gameBase) {
     uintptr_t targetVmt = gameBase + 0x013FB128; // hkpCharacterMotion VMT
 
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-
     MEMORY_BASIC_INFORMATION mbi;
-    uintptr_t currentAddr = (uintptr_t)si.lpMinimumApplicationAddress;
+    uintptr_t currentAddr = 0x10000;
+    const uintptr_t maxScanAddr = 0x0000000100000000ULL; // Scan lower 4 GB only (where Havok resides)
 
-    while (currentAddr < (uintptr_t)si.lpMaximumApplicationAddress) {
+    while (currentAddr < maxScanAddr) {
         if (VirtualQuery((LPCVOID)currentAddr, &mbi, sizeof(mbi)) == sizeof(mbi)) {
             if (mbi.State == MEM_COMMIT && (mbi.Protect == PAGE_READWRITE) && !(mbi.Protect & PAGE_GUARD)) {
-                const size_t chunkSize = 128 * 1024;
-                std::vector<uint8_t> buffer(chunkSize);
+                const size_t chunkSize = sizeof(s_scanBuffer);
 
                 for (size_t offset = 0; offset < mbi.RegionSize; offset += chunkSize) {
                     size_t toRead = min(chunkSize, mbi.RegionSize - offset);
                     SIZE_T bytesRead = 0;
 
-                    if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(currentAddr + offset), buffer.data(), toRead, &bytesRead) && bytesRead >= 0x80) {
+                    if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(currentAddr + offset), s_scanBuffer, toRead, &bytesRead) && bytesRead >= 0x80) {
                         for (size_t i = 0; i + 0x70 <= bytesRead; i += 8) {
-                            uintptr_t vmt = *reinterpret_cast<uintptr_t*>(&buffer[i]);
+                            uintptr_t vmt = *reinterpret_cast<uintptr_t*>(&s_scanBuffer[i]);
                             if (vmt == targetVmt) {
-                                // Check if candidate has valid matrix (rot[0][0] approx 1 or orientation)
-                                float* pRot = reinterpret_cast<float*>(&buffer[i + 0x20]);
-                                float* pPos = reinterpret_cast<float*>(&buffer[i + 0x50]);
-
-                                // Altitude in wasteland is typically between -100m and 2000m
+                                float* pPos = reinterpret_cast<float*>(&s_scanBuffer[i + 0x50]);
+                                // Altitude in wasteland is typically between -100m and 3000m
                                 if (pPos[1] > -100.0f && pPos[1] < 3000.0f && abs(pPos[1]) > 0.01f) {
                                     g_pHavokMotionInstance = currentAddr + offset + i;
                                     g_localTransform.isLocked = true;
@@ -61,15 +55,20 @@ inline bool FindHavokMotion(uintptr_t gameBase) {
             }
             currentAddr = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
         } else {
-            currentAddr += 0x1000;
+            currentAddr += 0x10000;
         }
     }
     return false;
 }
 
-// Read current Havok motion state
+// Read current Havok motion state (throttled search: at most once every 3 seconds if not locked)
 inline bool UpdateLocalTransform(uintptr_t gameBase) {
     if (!g_pHavokMotionInstance) {
+        static DWORD s_lastScanTime = 0;
+        DWORD now = GetTickCount();
+        if (now - s_lastScanTime < 3000) return false;
+        s_lastScanTime = now;
+
         FindHavokMotion(gameBase);
         if (!g_pHavokMotionInstance) return false;
     }
