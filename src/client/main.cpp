@@ -133,7 +133,7 @@ static void ServiceNetwork() {
                         MsgPlayerSync* sync = reinterpret_cast<MsgPlayerSync*>(payload);
                         RemoteRenderer::UpdateOrAddPlayer(hdr->clientId, sync->posX, sync->posY, sync->posZ, sync->health,
                                                           sync->quatX, sync->quatY, sync->quatZ, sync->quatW,
-                                                          sync->velX, sync->velY, sync->velZ);
+                                                          sync->velX, sync->velY, sync->velZ, sync->isInVehicle);
                         PuppetSpawner::SetPuppetPosition(sync->posX, sync->posY, sync->posZ);
                     } else if (hdr->opcode == OP_COMBAT_EVENT && hdr->payloadSize == sizeof(MsgCombatEvent)) {
                         MsgCombatEvent* evt = reinterpret_cast<MsgCombatEvent*>(payload);
@@ -236,7 +236,7 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
                 sync->velX = 0.0f; sync->velY = 0.0f; sync->velZ = 0.0f;
             }
             sync->health = 100.0f;
-            sync->isInVehicle = 0;
+            sync->isInVehicle = (HavokSync::g_localTransform.speed > 1.2f) ? 1 : 0;
 
             ENetPacket* pkt = enet_packet_create(syncBuf.data(), syncBuf.size(), 0);
             enet_peer_send(g_pServerPeer, 1, pkt);
@@ -282,7 +282,12 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             }
 
             ImGui::Separator();
-            ImGui::Text("3D Puppet Spawner:");
+            ImGui::Text("In-World 3D Model Rig (Magnum Opus / Max):");
+            const char* modelModes[] = { "Auto (Vehicle in Motion / Max on Foot)", "Force 3D Magnum Opus Car", "Force 3D Mad Max Character" };
+            ImGui::Combo("3D Model Render Mode", &RemoteRenderer::g_renderMode, modelModes, IM_ARRAYSIZE(modelModes));
+
+            ImGui::Separator();
+            ImGui::Text("3D Puppet & Native Engine Spawner:");
             if (!PuppetSpawner::g_bPuppetSpawned) {
                 if (ImGui::Button("Spawn Peer Puppet in World")) {
                     if (g_targetCandidateAddress != 0) {
