@@ -2,6 +2,8 @@ build/
 bin/
 tools/
 game/
+game2/
+videos/
 *.user
 *.suo
 *.pdb

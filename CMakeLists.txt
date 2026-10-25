@@ -58,3 +58,7 @@ target_link_libraries(test_lua PRIVATE lua)
 add_executable(test_client server/test_client.cpp)
 target_compile_definitions(test_client PRIVATE WIN32 _WINSOCK_DEPRECATED_NO_WARNINGS)
 target_link_libraries(test_client PRIVATE enet ws2_32 winmm)
+
+add_executable(test_sim server/test_sim.cpp)
+target_compile_definitions(test_sim PRIVATE WIN32 _WINSOCK_DEPRECATED_NO_WARNINGS)
+target_link_libraries(test_sim PRIVATE enet ws2_32 winmm)

@@ -16,9 +16,11 @@
 
 #include "../common/protocol.h"
 #include "../common/memory_scanner.h"
+#include "multi_instance.h"
 #include "auto_scanner.h"
 #include "remote_render.h"
 #include "combat_sync.h"
+#include "puppet_spawner.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -108,7 +110,9 @@ static void ServiceNetwork() {
             hdr->clientId = 0;
 
             MsgClientJoinReq* req = reinterpret_cast<MsgClientJoinReq*>(reqBuf.data() + sizeof(PacketHeader));
-            strncpy_s(req->playerName, "MaxRockatansky", sizeof(req->playerName));
+            char myName[32];
+            sprintf_s(myName, "Player_%u", GetCurrentProcessId());
+            strncpy_s(req->playerName, myName, sizeof(req->playerName));
             req->protocolVersion = 1;
 
             ENetPacket* pkt = enet_packet_create(reqBuf.data(), reqBuf.size(), ENET_PACKET_FLAG_RELIABLE);
@@ -126,6 +130,7 @@ static void ServiceNetwork() {
                     } else if (hdr->opcode == OP_PLAYER_SYNC && hdr->payloadSize == sizeof(MsgPlayerSync)) {
                         MsgPlayerSync* sync = reinterpret_cast<MsgPlayerSync*>(payload);
                         RemoteRenderer::UpdateOrAddPlayer(hdr->clientId, sync->posX, sync->posY, sync->posZ, sync->health);
+                        PuppetSpawner::SetPuppetPosition(sync->posX, sync->posY, sync->posZ);
                     } else if (hdr->opcode == OP_COMBAT_EVENT && hdr->payloadSize == sizeof(MsgCombatEvent)) {
                         MsgCombatEvent* evt = reinterpret_cast<MsgCombatEvent*>(payload);
                         CombatSync::HandleRemoteCombat(evt, hdr->clientId);
@@ -166,6 +171,7 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             g_pClient = enet_host_create(NULL, 1, 2, 0, 0);
 
             g_gameBase = Memory::FindModule(NULL, &g_gameSize);
+            PuppetSpawner::InitializeSpawnerHooks(g_gameBase);
 
             g_bImGuiInitialized = true;
         }
@@ -177,7 +183,6 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
 
     ServiceNetwork();
 
-    // Run auto-scanner updates
     if (AutoScanner::g_bScanningActive) {
         AutoScanner::UpdateCandidates(g_localPlayerPos);
         if (AutoScanner::g_selectedPlayerAddress != 0) {
@@ -190,11 +195,10 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
         }
     }
 
-    // Broadcast transform packet if attached and connected
     if (g_bConnected && g_bMemoryHooked) {
         static DWORD lastSend = 0;
         DWORD now = GetTickCount();
-        if (now - lastSend >= 33) { // 30 Hz sync rate
+        if (now - lastSend >= 33) {
             lastSend = now;
             std::vector<uint8_t> syncBuf(sizeof(PacketHeader) + sizeof(MsgPlayerSync));
             PacketHeader* hdr = reinterpret_cast<PacketHeader*>(syncBuf.data());
@@ -223,15 +227,14 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
-        // Render Co-Op World HUD & Combat Event Stream
         if (g_bConnected) {
             RemoteRenderer::RenderWorldHUD(g_localPlayerPos[0], g_localPlayerPos[1], g_localPlayerPos[2]);
             CombatSync::RenderCombatFeed();
         }
 
         if (g_bShowMenu) {
-            ImGui::Begin("Mad Max Co-Op Multiplayer (Milestones G & H)", &g_bShowMenu, ImGuiWindowFlags_AlwaysAutoResize);
-            ImGui::Text("Mad Max Multiplayer Injected - Press [F5] to Toggle Menu");
+            ImGui::Begin("Mad Max Co-Op Multiplayer (Milestone E/I - Puppet Rig)", &g_bShowMenu, ImGuiWindowFlags_AlwaysAutoResize);
+            ImGui::Text("Mad Max Multiplayer Injected (PID %u) - Press [F5] to Toggle Menu", GetCurrentProcessId());
             ImGui::Separator();
 
             ImGui::Text("Network & Server Connection:");
@@ -256,7 +259,19 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             }
 
             ImGui::Separator();
-            ImGui::Text("Milestone H: Co-Op Combat & Harpoon Actions:");
+            ImGui::Text("3D Puppet Spawner:");
+            if (!PuppetSpawner::g_bPuppetSpawned) {
+                if (ImGui::Button("Spawn Peer Puppet in World")) {
+                    if (g_targetCandidateAddress != 0) {
+                        PuppetSpawner::SpawnPuppetAt(g_targetCandidateAddress, g_localPlayerPos[0] + 5.0f, g_localPlayerPos[1], g_localPlayerPos[2] + 5.0f);
+                    }
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Peer Puppet Active @ 0x%p", (void*)PuppetSpawner::g_spawnedPuppetEntity);
+            }
+
+            ImGui::Separator();
+            ImGui::Text("Co-Op Combat & Harpoon Actions:");
             if (ImGui::Button("Fire Shotgun")) {
                 if (g_bConnected) {
                     std::vector<uint8_t> combatBuf(sizeof(PacketHeader) + sizeof(MsgCombatEvent));
@@ -335,7 +350,8 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
 }
 
 DWORD WINAPI ModThread(LPVOID lpParam) {
-    Sleep(2000);
+    EnableMultiInstanceHooks();
+    Sleep(1500);
 
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, DefWindowProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, "DXGITest", NULL };
     RegisterClassEx(&wc);
@@ -371,13 +387,11 @@ DWORD WINAPI ModThread(LPVOID lpParam) {
         DestroyWindow(hWnd);
         UnregisterClass("DXGITest", wc.hInstance);
 
-        if (MH_Initialize() == MH_OK) {
-            MH_CreateHook(pPresent, &Hooked_Present, (LPVOID*)&oPresent);
-            MH_EnableHook(pPresent);
+        MH_CreateHook(pPresent, &Hooked_Present, (LPVOID*)&oPresent);
+        MH_EnableHook(pPresent);
 
-            MH_CreateHook(pResizeBuffers, &Hooked_ResizeBuffers, (LPVOID*)&oResizeBuffers);
-            MH_EnableHook(pResizeBuffers);
-        }
+        MH_CreateHook(pResizeBuffers, &Hooked_ResizeBuffers, (LPVOID*)&oResizeBuffers);
+        MH_EnableHook(pResizeBuffers);
     }
 
     return 0;
@@ -386,6 +400,9 @@ DWORD WINAPI ModThread(LPVOID lpParam) {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
+        if (MH_Initialize() == MH_OK) {
+            EnableMultiInstanceHooks();
+        }
         CreateThread(NULL, 0, ModThread, NULL, 0, NULL);
     }
     return TRUE;
