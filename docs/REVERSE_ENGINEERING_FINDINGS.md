@@ -58,3 +58,30 @@ Over **1,776 unique RTTI type descriptors (`.?AV<Class>@@`)** are present inside
 | **Q3: Player & Vehicle Structures** | `CPlayer` and `CLandVehicle` / `CPhysicsVehicleChassis` represent local player and Magnum Opus. | **CONFIRMED (Classes)** / **CANDIDATE (Offsets)** | RTTI symbols found. Exact memory offsets require live Cheat Engine / x64dbg pointer walk. |
 | **Q4: Spawning Remote Players** | `CSpawnInfoDataContainer` and `CSpawnedEntityHandler` handle dynamic entity creation. | **CANDIDATE** | Disassemble `CSpawnedEntityHandler` in Ghidra to locate calling convention for manual entity instantiation. |
 | **Q5: Community Signatures** | Community Cheat Engine tables (e.g. Paul44) document float[3] coordinates for player position and waypoint teleportation. | **CORROBORATED** | FearLess CE database patterns confirm XYZ float structure. |
+
+---
+
+## 4. Deep Reverse Engineering Breakthroughs (REA Investigation)
+
+### A. Denuvo Packaging on Disk vs. Decrypted Memory at Runtime
+- Disassembly of raw `.idata` code sections on disk (`CCloneFactory::CloneEntity`, `CPlayer::VFunc`, `CSpawnedEntityHandler`) yields obfuscated/encrypted bytecode stubs (`loopne`, `mov esp, 0x8781b5ff`).
+- `MadMax.exe` decrypts all engine code and data at runtime into the memory range `0x140000000` to `0x145D58000`.
+- **Methodology Decision:** All pointer dereferencing, vtable walking, and struct inspection must be executed **dynamically in live memory** by the injected client DLL (`dxgi.dll`).
+
+### B. Complete VMT Address Catalog (270 Engine Classes Resolved)
+We systematically scanned the MSVC 64-bit RTTI Complete Object Locators (`COL`) in memory and resolved 270 Virtual Method Tables:
+- `CPlayer`: VMT `0x1412C2CB0` (RVA `0x012C2CB0`)
+- `CPlayerStateObject`: VMT `0x1412BB058` (RVA `0x012BB058`)
+- `CVisiblePlayerUpgradesManager`: VMT `0x1412A57A8` (RVA `0x012A57A8`)
+- `CLandVehicle`: VMT `0x1412D9A68` (RVA `0x012D9A68`)
+- `CPhysicsVehicleChassis`: VMT `0x141424E28` (RVA `0x01424E28`)
+- `CCallSignatureVehicle`: VMT `0x1412DB020` (RVA `0x012DB020`)
+- `CSpawnedEntityHandler`: VMT `0x1412CE770` (RVA `0x012CE770`)
+- `CSpawnObjectCollection`: VMT `0x14129D538` (RVA `0x0129D538`)
+- `CGameObjectFactory`: VMT `0x1412928B0` (RVA `0x012928B0`)
+
+### C. Live Entity Inspector Implementation
+The client DLL now incorporates [`src/client/entity_inspector.h`](file:///C:/Users/gm491/madmax-coop/src/client/entity_inspector.h):
+- When `AutoScanner` locks onto Max's XYZ coordinates in heap memory, `EntityInspector` walks backwards through memory up to 1,024 bytes (`0x400`).
+- It matches each pointer against the 270 resolved VMTs via [`src/client/vmt_catalog.h`](file:///C:/Users/gm491/madmax-coop/src/client/vmt_catalog.h).
+- Once matched, it isolates the true C++ instance base pointer (`this`), calculates the exact coordinate member offset, and displays the internal struct layout in the F5 ImGui menu.
