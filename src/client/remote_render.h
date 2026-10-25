@@ -3,8 +3,10 @@
 #include <d3d11.h>
 #include <vector>
 #include <unordered_map>
+#include <cmath>
 #include <imgui.h>
 #include "../common/protocol.h"
+#include "../common/camera_matrix.h"
 
 namespace RemoteRenderer {
 
@@ -28,7 +30,6 @@ inline void UpdateOrAddPlayer(uint32_t clientId, float x, float y, float z, floa
     p.health = health;
     p.lastPacketTime = GetTickCount();
 
-    // If new, initialize position
     if (p.posX == 0.0f && p.posY == 0.0f && p.posZ == 0.0f) {
         p.posX = x;
         p.posY = y;
@@ -36,18 +37,15 @@ inline void UpdateOrAddPlayer(uint32_t clientId, float x, float y, float z, floa
     }
 }
 
-// Hermite / linear interpolation on client tick (smooth 60fps)
 inline void InterpolatePositions(float dt) {
     for (auto& pair : g_remotePlayers) {
         auto& p = pair.second;
-        // Smooth lerp 15.0f factor
         p.posX += (p.targetX - p.posX) * min(1.0f, dt * 15.0f);
         p.posY += (p.targetY - p.posY) * min(1.0f, dt * 15.0f);
         p.posZ += (p.targetZ - p.posZ) * min(1.0f, dt * 15.0f);
     }
 }
 
-// Render 3D Radar / Compass & World Markers
 inline void RenderWorldHUD(float localX, float localY, float localZ) {
     ImDrawList* drawList = ImGui::GetBackgroundDrawList();
     if (!drawList) return;
@@ -56,19 +54,19 @@ inline void RenderWorldHUD(float localX, float localY, float localZ) {
     float screenW = io.DisplaySize.x;
     float screenH = io.DisplaySize.y;
 
-    // Draw Wasteland Compass HUD at top center
     float compassCenterX = screenW * 0.5f;
     float compassCenterY = 50.0f;
 
-    drawList->AddCircleFilled(ImVec2(compassCenterX, compassCenterY), 24.0f, IM_COL32(20, 20, 20, 180));
-    drawList->AddCircle(ImVec2(compassCenterX, compassCenterY), 24.0f, IM_COL32(200, 150, 50, 255), 32, 2.0f);
+    // Outer ring & North pointer
+    drawList->AddCircleFilled(ImVec2(compassCenterX, compassCenterY), 24.0f, IM_COL32(15, 15, 15, 200));
+    drawList->AddCircle(ImVec2(compassCenterX, compassCenterY), 24.0f, IM_COL32(230, 160, 40, 255), 32, 2.0f);
     drawList->AddText(ImVec2(compassCenterX - 4, compassCenterY - 36), IM_COL32(255, 255, 255, 255), "N");
 
     DWORD now = GetTickCount();
 
     for (const auto& pair : g_remotePlayers) {
         const auto& p = pair.second;
-        if (now - p.lastPacketTime > 10000) continue; // Timed out
+        if (now - p.lastPacketTime > 10000) continue;
 
         float dx = p.posX - localX;
         float dz = p.posZ - localZ;
@@ -81,13 +79,20 @@ inline void RenderWorldHUD(float localX, float localY, float localZ) {
         float blipDist = min(20.0f, (dist / 100.0f) * 20.0f);
 
         ImVec2 blipPos(compassCenterX + normX * blipDist, compassCenterY - normZ * blipDist);
-        drawList->AddCircleFilled(blipPos, 4.0f, IM_COL32(50, 255, 50, 255));
+        drawList->AddCircleFilled(blipPos, 4.5f, IM_COL32(50, 255, 50, 255));
+        drawList->AddCircle(blipPos, 5.5f, IM_COL32(255, 255, 255, 220), 16, 1.0f);
 
-        // Draw In-World Tag / Floating Marker on Screen
-        // Simple screen projection preview
-        char tag[64];
-        sprintf_s(tag, "[P2] Wastelander #%u (%.1fm)", p.clientId, dist);
-        drawList->AddText(ImVec2(screenW * 0.5f - 50.0f, 90.0f), IM_COL32(50, 255, 50, 255), tag);
+        // In-world nametag banner
+        char tag[128];
+        sprintf_s(tag, "[P2] Furiosa (Client #%u) | %.1f m", p.clientId, dist);
+        
+        ImVec2 textSize = ImGui::CalcTextSize(tag);
+        float tagX = compassCenterX - textSize.x * 0.5f;
+        float tagY = 85.0f;
+
+        drawList->AddRectFilled(ImVec2(tagX - 8, tagY - 2), ImVec2(tagX + textSize.x + 8, tagY + textSize.y + 4), IM_COL32(20, 20, 20, 180), 4.0f);
+        drawList->AddRect(ImVec2(tagX - 8, tagY - 2), ImVec2(tagX + textSize.x + 8, tagY + textSize.y + 4), IM_COL32(50, 255, 50, 255), 4.0f);
+        drawList->AddText(ImVec2(tagX, tagY), IM_COL32(255, 255, 255, 255), tag);
     }
 }
 
