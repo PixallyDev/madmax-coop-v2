@@ -1,0 +1,7 @@
+build/
+bin/
+tools/
+game/
+*.user
+*.suo
+*.pdb
