@@ -23,6 +23,7 @@
 #include "puppet_spawner.h"
 #include "entity_inspector.h"
 #include "havok_sync.h"
+#include "split_screen.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -50,12 +51,134 @@ static uint32_t g_assignedClientId = 0;
 static uint32_t g_packetSeq = 1;
 static char g_motd[64] = "Waiting for connection...";
 
+// Embedded Server State (One-Click Host & Play)
+static ENetHost* g_pEmbeddedServer = nullptr;
+static HANDLE g_hServerThread = NULL;
+static bool g_bIsHosting = false;
+static uint32_t g_nextServerClientId = 100;
+
+struct ServerPeerData {
+    uint32_t clientId;
+    char name[32];
+};
+static std::unordered_map<ENetPeer*, ServerPeerData> g_serverPeers;
+
+static DWORD WINAPI EmbeddedServerWorker(LPVOID lpParam) {
+    ENetAddress address;
+    address.host = ENET_HOST_ANY;
+    address.port = (enet_uint16)g_serverPort;
+
+    g_pEmbeddedServer = enet_host_create(&address, 32, 2, 0, 0);
+    if (!g_pEmbeddedServer) {
+        g_bIsHosting = false;
+        return 1;
+    }
+
+    ENetEvent event;
+    while (g_bIsHosting && g_pEmbeddedServer) {
+        while (enet_host_service(g_pEmbeddedServer, &event, 10) > 0) {
+            switch (event.type) {
+                case ENET_EVENT_TYPE_CONNECT: {
+                    uint32_t newId = g_nextServerClientId++;
+                    ServerPeerData pData;
+                    pData.clientId = newId;
+                    strcpy_s(pData.name, "Wastelander");
+                    g_serverPeers[event.peer] = pData;
+                    break;
+                }
+                case ENET_EVENT_TYPE_RECEIVE: {
+                    if (event.packet->dataLength >= sizeof(PacketHeader)) {
+                        PacketHeader* hdr = reinterpret_cast<PacketHeader*>(event.packet->data);
+                        if (hdr->magic == MMCP_MAGIC) {
+                            uint8_t* payload = event.packet->data + sizeof(PacketHeader);
+                            if (hdr->opcode == OP_CLIENT_JOIN_REQ && hdr->payloadSize == sizeof(MsgClientJoinReq)) {
+                                MsgClientJoinReq* req = reinterpret_cast<MsgClientJoinReq*>(payload);
+                                strncpy_s(g_serverPeers[event.peer].name, req->playerName, sizeof(g_serverPeers[event.peer].name));
+
+                                std::vector<uint8_t> ackBuf(sizeof(PacketHeader) + sizeof(MsgClientJoinAck));
+                                PacketHeader* ackHdr = reinterpret_cast<PacketHeader*>(ackBuf.data());
+                                ackHdr->magic = MMCP_MAGIC;
+                                ackHdr->opcode = OP_CLIENT_JOIN_ACK;
+                                ackHdr->payloadSize = sizeof(MsgClientJoinAck);
+                                ackHdr->sequence = 1;
+                                ackHdr->clientId = g_serverPeers[event.peer].clientId;
+
+                                MsgClientJoinAck* ack = reinterpret_cast<MsgClientJoinAck*>(ackBuf.data() + sizeof(PacketHeader));
+                                ack->assignedClientId = g_serverPeers[event.peer].clientId;
+                                ack->totalPeersConnected = static_cast<uint32_t>(g_serverPeers.size());
+                                strncpy_s(ack->serverMotd, "Embedded Wasteland Server (Active)", sizeof(ack->serverMotd));
+
+                                ENetPacket* resp = enet_packet_create(ackBuf.data(), ackBuf.size(), ENET_PACKET_FLAG_RELIABLE);
+                                enet_peer_send(event.peer, 0, resp);
+                            } else {
+                                // Relay valid MMCP packet to all other connected peers
+                                hdr->clientId = g_serverPeers[event.peer].clientId;
+                                for (size_t i = 0; i < g_pEmbeddedServer->peerCount; ++i) {
+                                    ENetPeer* curPeer = &g_pEmbeddedServer->peers[i];
+                                    if (curPeer != event.peer && curPeer->state == ENET_PEER_STATE_CONNECTED) {
+                                        ENetPacket* fwd = enet_packet_create(event.packet->data, event.packet->dataLength, event.packet->flags);
+                                        enet_peer_send(curPeer, event.channelID, fwd);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    enet_packet_destroy(event.packet);
+                    break;
+                }
+                case ENET_EVENT_TYPE_DISCONNECT: {
+                    g_serverPeers.erase(event.peer);
+                    break;
+                }
+                case ENET_EVENT_TYPE_NONE:
+                    break;
+            }
+        }
+    }
+
+    if (g_pEmbeddedServer) {
+        enet_host_destroy(g_pEmbeddedServer);
+        g_pEmbeddedServer = nullptr;
+    }
+    g_serverPeers.clear();
+    return 0;
+}
+
+static void StartHosting() {
+    if (g_bIsHosting) return;
+    g_bIsHosting = true;
+    g_hServerThread = CreateThread(NULL, 0, EmbeddedServerWorker, NULL, 0, NULL);
+    Sleep(80);
+
+    if (g_pClient && !g_bConnected) {
+        ENetAddress address;
+        enet_address_set_host(&address, "127.0.0.1");
+        address.port = (enet_uint16)g_serverPort;
+        g_pServerPeer = enet_host_connect(g_pClient, &address, 2, 0);
+    }
+}
+
+static void StopHosting() {
+    g_bIsHosting = false;
+    if (g_hServerThread) {
+        WaitForSingleObject(g_hServerThread, 500);
+        CloseHandle(g_hServerThread);
+        g_hServerThread = NULL;
+    }
+    if (g_pServerPeer) {
+        enet_peer_disconnect(g_pServerPeer, 0);
+    }
+    g_bConnected = false;
+}
+
 // Telemetry & Memory
 static uintptr_t g_gameBase = 0;
 static size_t g_gameSize = 0;
 static uintptr_t g_targetCandidateAddress = 0;
 static float g_localPlayerPos[3] = { 0.0f, 0.0f, 0.0f };
 static bool g_bMemoryHooked = false;
+static bool g_bManualCoordOverride = false;
+static float g_manualCoords[3] = { 100.0f, 500.0f, 100.0f };
 
 static bool SafeReadCoords(uintptr_t address, float* outCoords) {
     if (!address) return false;
@@ -79,6 +202,9 @@ static void CreateRenderTarget(IDXGISwapChain* pSwapChain) {
 }
 
 LRESULT CALLBACK Hooked_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    if (SplitScreen::HandleWindowMessages(hWnd, uMsg, wParam, lParam))
+        return 0;
+
     if (g_bShowMenu && ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam))
         return true;
     if (uMsg == WM_KEYDOWN && wParam == VK_F5) {
@@ -177,6 +303,9 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             g_gameBase = Memory::FindModule(NULL, &g_gameSize);
             PuppetSpawner::InitializeSpawnerHooks(g_gameBase);
 
+            SplitScreen::InstallInputHooks();
+            SplitScreen::SnapWindowToHalf(g_hWnd);
+
             g_bImGuiInitialized = true;
         }
     }
@@ -210,7 +339,7 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
         }
     }
 
-    if (g_bConnected && g_bMemoryHooked) {
+    if (g_bConnected) {
         static DWORD lastSend = 0;
         DWORD now = GetTickCount();
         if (now - lastSend >= 33) {
@@ -224,10 +353,27 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             hdr->clientId = g_assignedClientId;
 
             MsgPlayerSync* sync = reinterpret_cast<MsgPlayerSync*>(syncBuf.data() + sizeof(PacketHeader));
-            sync->posX = g_localPlayerPos[0];
-            sync->posY = g_localPlayerPos[1];
-            sync->posZ = g_localPlayerPos[2];
-            if (HavokSync::g_localTransform.isLocked) {
+            
+            float sendX = g_localPlayerPos[0];
+            float sendY = g_localPlayerPos[1];
+            float sendZ = g_localPlayerPos[2];
+
+            if (g_bManualCoordOverride) {
+                sendX = g_manualCoords[0];
+                sendY = g_manualCoords[1];
+                sendZ = g_manualCoords[2];
+            } else if (!g_bMemoryHooked || (sendX == 0.0f && sendY == 0.0f && sendZ == 0.0f)) {
+                // Plausible initial position offset by client ID so peers appear right in front of each other
+                sendX = 100.0f + (g_assignedClientId % 10) * 8.0f;
+                sendY = 500.0f;
+                sendZ = 100.0f + (g_assignedClientId % 10) * 8.0f;
+            }
+
+            sync->posX = sendX;
+            sync->posY = sendY;
+            sync->posZ = sendZ;
+
+            if (HavokSync::g_localTransform.isLocked && !g_bManualCoordOverride) {
                 HavokSync::MatrixToQuaternion(HavokSync::g_localTransform.rot, sync->quatX, sync->quatY, sync->quatZ, sync->quatW);
                 sync->velX = HavokSync::g_localTransform.vel[0];
                 sync->velY = HavokSync::g_localTransform.vel[1];
@@ -252,7 +398,10 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
         ImGui::NewFrame();
 
         if (g_bConnected) {
-            RemoteRenderer::RenderWorldHUD(g_localPlayerPos[0], g_localPlayerPos[1], g_localPlayerPos[2], HavokSync::g_localTransform.yaw);
+            float hudX = (g_localPlayerPos[0] != 0.0f) ? g_localPlayerPos[0] : (100.0f + (g_assignedClientId % 10) * 8.0f);
+            float hudY = (g_localPlayerPos[1] != 0.0f) ? g_localPlayerPos[1] : 500.0f;
+            float hudZ = (g_localPlayerPos[2] != 0.0f) ? g_localPlayerPos[2] : (100.0f + (g_assignedClientId % 10) * 8.0f);
+            RemoteRenderer::RenderWorldHUD(hudX, hudY, hudZ, HavokSync::g_localTransform.yaw);
             CombatSync::RenderCombatFeed();
         }
 
@@ -262,19 +411,27 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
             ImGui::Separator();
 
             ImGui::Text("Network & Server Connection:");
-            ImGui::InputText("Server IP", g_serverIp, sizeof(g_serverIp));
-            ImGui::InputInt("Port", &g_serverPort);
-
-            if (!g_bConnected) {
-                if (ImGui::Button("Connect to Server")) {
+            if (!g_bConnected && !g_bIsHosting) {
+                if (ImGui::Button("Host Co-Op Session (Port 7777)", ImVec2(240, 28))) {
+                    StartHosting();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Join Co-Op Session (127.0.0.1)", ImVec2(240, 28))) {
                     ENetAddress address;
                     enet_address_set_host(&address, g_serverIp);
                     address.port = (enet_uint16)g_serverPort;
                     g_pServerPeer = enet_host_connect(g_pClient, &address, 2, 0);
                 }
+                ImGui::InputText("Server IP", g_serverIp, sizeof(g_serverIp));
+                ImGui::InputInt("Port", &g_serverPort);
+            } else if (g_bIsHosting) {
+                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "HOSTING! Port %d (Peers: %zu) | ClientID: %u", g_serverPort, g_serverPeers.size(), g_assignedClientId);
+                ImGui::Text("Peers in Session: %zu", RemoteRenderer::g_remotePlayers.size());
+                if (ImGui::Button("Stop Hosting")) {
+                    StopHosting();
+                }
             } else {
-                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Connected! ClientID: %u", g_assignedClientId);
-                ImGui::Text("MOTD: %s", g_motd);
+                ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Connected as Client #%u | MOTD: %s", g_assignedClientId, g_motd);
                 ImGui::Text("Peers in Session: %zu", RemoteRenderer::g_remotePlayers.size());
                 if (ImGui::Button("Disconnect")) {
                     if (g_pServerPeer) enet_peer_disconnect(g_pServerPeer, 0);
@@ -292,8 +449,15 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
 
             ImGui::Separator();
             ImGui::Text("3D Puppet & Native Engine Spawner:");
+            if (ImGui::Button("Spawn Test 3D Puppet (Instant Visual)")) {
+                float px = (g_localPlayerPos[0] != 0.0f) ? g_localPlayerPos[0] + 6.0f : 106.0f;
+                float py = (g_localPlayerPos[1] != 0.0f) ? g_localPlayerPos[1] : 500.0f;
+                float pz = (g_localPlayerPos[2] != 0.0f) ? g_localPlayerPos[2] + 6.0f : 106.0f;
+                RemoteRenderer::UpdateOrAddPlayer(999, px, py, pz, 100.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1);
+            }
+            ImGui::SameLine();
             if (!PuppetSpawner::g_bPuppetSpawned) {
-                if (ImGui::Button("Spawn Peer Puppet in World")) {
+                if (ImGui::Button("Native Engine Spawn")) {
                     if (g_targetCandidateAddress != 0) {
                         PuppetSpawner::SpawnPuppetAt(g_targetCandidateAddress, g_localPlayerPos[0] + 5.0f, g_localPlayerPos[1], g_localPlayerPos[2] + 5.0f);
                     }
@@ -363,6 +527,13 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
                 }
             }
 
+            ImGui::Checkbox("Manual Coordinate Test Override (Nudge Puppet)", &g_bManualCoordOverride);
+            if (g_bManualCoordOverride) {
+                ImGui::SliderFloat("Manual X", &g_manualCoords[0], -2000.0f, 2000.0f, "%.1f");
+                ImGui::SliderFloat("Manual Y", &g_manualCoords[1], -100.0f, 1500.0f, "%.1f");
+                ImGui::SliderFloat("Manual Z", &g_manualCoords[2], -2000.0f, 2000.0f, "%.1f");
+            }
+
             if (g_bMemoryHooked) {
                 ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Live Wasteland Telemetry:");
                 ImGui::Text("X (East/West):   %.3f", g_localPlayerPos[0]);
@@ -372,6 +543,8 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
                     ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Havok Rig: LOCKED @ 0x%p", (void*)HavokSync::g_pHavokMotionInstance);
                     ImGui::Text("Speed: %.1f km/h | Yaw: %.1f deg", HavokSync::g_localTransform.speed * 3.6f, HavokSync::g_localTransform.yaw * 57.2958f);
                 }
+            } else if (!g_bManualCoordOverride) {
+                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f), "Syncing with Fallback Wasteland Coords (Walk in-game to auto-lock)");
             }
 
             ImGui::Separator();
@@ -408,6 +581,16 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
                 }
             }
 
+            ImGui::Separator();
+            ImGui::Text("Split-Screen Orchestrator:");
+            const char* modeStr = (SplitScreen::g_InputMode == SplitScreen::InputDeviceMode::KeyboardMouse) ? "Keyboard & Mouse (P1 - Focus)" :
+                                  (SplitScreen::g_InputMode == SplitScreen::InputDeviceMode::GamepadOnly) ? "Gamepad (P2 - Single Controller)" : "Dual Gamepad";
+            ImGui::Text("Input Profile: %s", modeStr);
+            ImGui::Text("Screen Half: %s", SplitScreen::g_ScreenHalf.c_str());
+            if (ImGui::Button("Snap Window to Half Screen")) {
+                SplitScreen::SnapWindowToHalf(g_hWnd);
+            }
+
             ImGui::End();
         }
 
@@ -421,6 +604,7 @@ HRESULT __fastcall Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval,
 
 DWORD WINAPI ModThread(LPVOID lpParam) {
     EnableMultiInstanceHooks();
+    SplitScreen::InstallInputHooks();
     Sleep(1500);
 
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, DefWindowProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, "DXGITest", NULL };

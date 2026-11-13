@@ -108,7 +108,7 @@ inline void Render3DModelForPeer(ImDrawList* drawList, const RemotePlayer& p,
 
     // Terrain ground-snap safeguard: if altitude delta > 30m, clamp to local ground level
     float renderPosY = p.posY;
-    if (fabsf(renderPosY - localY) > 30.0f && localY > 300.0f) {
+    if (fabsf(renderPosY - localY) > 30.0f) {
         renderPosY = localY;
     }
 
@@ -345,7 +345,7 @@ inline void RenderWorldHUD(float localX, float localY, float localZ, float local
 
     for (const auto& pair : g_remotePlayers) {
         const auto& p = pair.second;
-        if (now - p.lastPacketTime > 10000) continue;
+        if (p.clientId != 999 && now - p.lastPacketTime > 15000) continue;
 
         float dx = p.posX - localX;
         float dz = p.posZ - localZ;

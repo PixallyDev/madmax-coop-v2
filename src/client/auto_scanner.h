@@ -25,19 +25,25 @@ inline float curCoords(uintptr_t addr, int idx) {
     return val;
 }
 
-// Scan heap & writable memory below 4 GB for plausible Wasteland player coordinates
+// Scan heap & writable memory across 64-bit address space for plausible Wasteland player coordinates
 inline void StartHeuristicScan() {
     g_candidates.clear();
     g_selectedPlayerAddress = 0;
     g_bScanningActive = true;
 
+    SYSTEM_INFO sysInfo;
+    GetSystemInfo(&sysInfo);
+    uintptr_t maxScanAddr = (uintptr_t)sysInfo.lpMaximumApplicationAddress;
+    if (maxScanAddr > 0x0000030000000000ULL) {
+        maxScanAddr = 0x0000030000000000ULL; // Scan practical 64-bit heap range (up to 3 TB)
+    }
+
     MEMORY_BASIC_INFORMATION mbi;
     uintptr_t currentAddr = 0x10000;
-    const uintptr_t maxScanAddr = 0x0000000100000000ULL; // Scan lower 4 GB only
 
-    while (currentAddr < maxScanAddr) {
+    while (currentAddr < maxScanAddr && g_candidates.size() < 3000) {
         if (VirtualQuery((LPCVOID)currentAddr, &mbi, sizeof(mbi)) == sizeof(mbi)) {
-            if (mbi.State == MEM_COMMIT && (mbi.Protect == PAGE_READWRITE) && !(mbi.Protect & PAGE_GUARD)) {
+            if (mbi.State == MEM_COMMIT && (mbi.Protect == PAGE_READWRITE) && !(mbi.Protect & PAGE_GUARD) && mbi.RegionSize <= 64 * 1024 * 1024) {
                 const size_t chunkSize = sizeof(s_autoScanBuf);
 
                 for (size_t offset = 0; offset < mbi.RegionSize; offset += chunkSize) {
@@ -50,25 +56,25 @@ inline void StartHeuristicScan() {
                             float y = *reinterpret_cast<float*>(&s_autoScanBuf[i + 4]);
                             float z = *reinterpret_cast<float*>(&s_autoScanBuf[i + 8]);
 
-                            // Realistic wasteland bounds & non-zero coordinates
-                            if (x > -40000.0f && x < 40000.0f && abs(x) > 1.0f &&
-                                y >= 400.0f && y <= 850.0f &&
-                                z > -40000.0f && z < 40000.0f && abs(z) > 1.0f) {
+                            // Realistic wasteland bounds & non-zero coordinates across all terrains/caves/strongholds
+                            if (x > -50000.0f && x < 50000.0f && abs(x) > 0.5f &&
+                                y >= -300.0f && y <= 3500.0f &&
+                                z > -50000.0f && z < 50000.0f && abs(z) > 0.5f) {
                                 
                                 uintptr_t candAddr = currentAddr + offset + i;
                                 g_candidates.push_back({ candAddr, x, y, z, 0.0f, 1 });
-                                if (g_candidates.size() >= 2000) break;
+                                if (g_candidates.size() >= 3000) break;
                             }
                         }
                     }
-                    if (g_candidates.size() >= 2000) break;
+                    if (g_candidates.size() >= 3000) break;
                 }
             }
             currentAddr = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
         } else {
             currentAddr += 0x10000;
         }
-        if (g_candidates.size() >= 2000) break;
+        if (g_candidates.size() >= 3000) break;
     }
 }
 

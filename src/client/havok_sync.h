@@ -21,17 +21,28 @@ static uintptr_t g_pHavokMotionInstance = 0;
 static HavokTransform g_localTransform = { 0 };
 static uint8_t s_scanBuffer[64 * 1024]; // Static buffer: zero dynamic heap allocation
 
-// Scan committed memory below 4 GB for active Wasteland hkpCharacterMotion (VMT 0x1413FB128)
+// Scan committed memory across 64-bit address space for active Wasteland Havok / Player entities
 inline bool FindHavokMotion(uintptr_t gameBase) {
-    uintptr_t targetVmt = gameBase + 0x013FB128; // hkpCharacterMotion VMT
+    uintptr_t vmtHavokMotion = gameBase + 0x013FB128;
+    uintptr_t vmtWorldObject = gameBase + 0x013FB240;
+    uintptr_t vmtCharRigidBody = gameBase + 0x013246C0;
+    uintptr_t vmtPlayer = gameBase + 0x012C2CB0;
+    uintptr_t vmtLandVeh = gameBase + 0x012D9A68;
+    uintptr_t vmtVehChassis = gameBase + 0x0132C3B0;
+
+    SYSTEM_INFO sysInfo;
+    GetSystemInfo(&sysInfo);
+    uintptr_t maxScanAddr = (uintptr_t)sysInfo.lpMaximumApplicationAddress;
+    if (maxScanAddr > 0x0000030000000000ULL) {
+        maxScanAddr = 0x0000030000000000ULL; // Scan practical 64-bit heap range (up to 3 TB)
+    }
 
     MEMORY_BASIC_INFORMATION mbi;
     uintptr_t currentAddr = 0x10000;
-    const uintptr_t maxScanAddr = 0x0000000100000000ULL; // Scan lower 4 GB only
 
     while (currentAddr < maxScanAddr) {
         if (VirtualQuery((LPCVOID)currentAddr, &mbi, sizeof(mbi)) == sizeof(mbi)) {
-            if (mbi.State == MEM_COMMIT && (mbi.Protect == PAGE_READWRITE) && !(mbi.Protect & PAGE_GUARD)) {
+            if (mbi.State == MEM_COMMIT && (mbi.Protect == PAGE_READWRITE) && !(mbi.Protect & PAGE_GUARD) && mbi.RegionSize <= 64 * 1024 * 1024) {
                 const size_t chunkSize = sizeof(s_scanBuffer);
 
                 for (size_t offset = 0; offset < mbi.RegionSize; offset += chunkSize) {
@@ -41,12 +52,12 @@ inline bool FindHavokMotion(uintptr_t gameBase) {
                     if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(currentAddr + offset), s_scanBuffer, toRead, &bytesRead) && bytesRead >= 0x80) {
                         for (size_t i = 0; i + 0x70 <= bytesRead; i += 8) {
                             uintptr_t vmt = *reinterpret_cast<uintptr_t*>(&s_scanBuffer[i]);
-                            if (vmt == targetVmt) {
+                            if (vmt == vmtHavokMotion || vmt == vmtWorldObject || vmt == vmtCharRigidBody || 
+                                vmt == vmtPlayer || vmt == vmtLandVeh || vmt == vmtVehChassis) {
                                 float* pPos = reinterpret_cast<float*>(&s_scanBuffer[i + 0x50]);
                                 
-                                // CRITICAL: Mad Max Wasteland ground level is strictly 400m - 850m.
-                                // Rejects dummy objects at 0.0m or underground props!
-                                if (pPos[1] >= 400.0f && pPos[1] <= 850.0f &&
+                                // Plausible wasteland ground & non-zero coordinates
+                                if (pPos[1] >= -300.0f && pPos[1] <= 3500.0f &&
                                     (abs(pPos[0]) > 0.1f || abs(pPos[2]) > 0.1f)) {
                                     
                                     g_pHavokMotionInstance = currentAddr + offset + i;
@@ -88,7 +99,7 @@ inline bool UpdateLocalTransform(uintptr_t gameBase) {
         float* pPos = reinterpret_cast<float*>(&motionData[0x50]);
 
         // Validate that this object is still in the active wasteland play area
-        if (pPos[1] < 400.0f || pPos[1] > 850.0f || (pPos[0] == 0.0f && pPos[2] == 0.0f)) {
+        if (pPos[1] < -300.0f || pPos[1] > 3500.0f || (pPos[0] == 0.0f && pPos[2] == 0.0f)) {
             // Position became invalid or 0,0,0! Unlock so next cycle scans for the real object
             g_pHavokMotionInstance = 0;
             g_localTransform.isLocked = false;
