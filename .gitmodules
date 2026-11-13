@@ -1,0 +1,12 @@
+[submodule "src/vendor/enet"]
+	path = src/vendor/enet
+	url = https://github.com/lsalzman/enet.git
+[submodule "src/vendor/imgui"]
+	path = src/vendor/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "src/vendor/lua"]
+	path = src/vendor/lua
+	url = https://github.com/lua/lua.git
+[submodule "src/vendor/minhook"]
+	path = src/vendor/minhook
+	url = https://github.com/TsudaKageyu/minhook.git
