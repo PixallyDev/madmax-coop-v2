@@ -28,7 +28,7 @@ This was forked from v1 at Checkpoint 12. The new work is in `src/client/main.cp
 Requirements: Windows x64, Visual Studio 2022, CMake 3.20+.
 
 ```powershell
-git clone https://github.com/PixallyDev/madmax-coop-v2.git
+git clone --recursive https://github.com/PixallyDev/madmax-coop-v2.git
 cd madmax-coop-v2
 cmake -B build -A x64
 cmake --build build --config Release
